@@ -59,18 +59,48 @@ export class HeartbeatService {
   }
 
   /**
+   * Ensure heartbeat file exists with template.
+   */
+  private ensureHeartbeatFile(): void {
+    try {
+      const fs = require('fs');
+      if (!fs.existsSync(this.heartbeatFile)) {
+        const template = `# Heartbeat Tasks
+
+This file is checked every 30 minutes by your octobot agent.
+Add tasks below that you want the agent to work on periodically.
+
+If this file has no tasks (only headers and comments), the agent will skip the heartbeat.
+
+## Active Tasks
+
+<!-- Add your periodic tasks below this line -->
+
+
+## Completed
+
+<!-- Move completed tasks here or delete them -->
+`;
+        fs.writeFileSync(this.heartbeatFile, template, 'utf-8');
+        console.log('⏱️ Created HEARTBEAT.md');
+      }
+    } catch (error) {
+      console.error('Error creating heartbeat file:', error);
+    }
+  }
+
+  /**
    * Read the heartbeat file content.
    */
   private readHeartbeatFile(): string | null {
     try {
       const fs = require('fs');
-      if (fs.existsSync(this.heartbeatFile)) {
-        return fs.readFileSync(this.heartbeatFile, 'utf-8');
-      }
+      this.ensureHeartbeatFile();
+      return fs.readFileSync(this.heartbeatFile, 'utf-8');
     } catch (error) {
       console.error('Error reading heartbeat file:', error);
+      return null;
     }
-    return null;
   }
 
   /**
