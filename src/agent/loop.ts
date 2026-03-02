@@ -4,9 +4,12 @@ import { LLMProvider, ChatMessage } from '../providers/llm';
 import { ReadFileTool, WriteFileTool, EditFileTool, ListDirTool, ExecTool } from './tools/filesystem';
 import { WebSearchTool } from './tools/web_search';
 import { MessageTool } from './tools/message';
+import { SpawnTool } from './tools/spawn';
 import { MessageBus, InboundMessage, OutboundMessage, createOutboundMessage } from '../bus';
 import { SessionManager, Session, SessionMessage, addMessage, getHistory } from '../session';
 import { MemoryManager } from '../memory';
+import { SubagentManager } from './subagent';
+import { HeartbeatService } from '../heartbeat/service';
 
 export class AgentLoop {
   private maxIterations = 40;
@@ -16,17 +19,39 @@ export class AgentLoop {
   private running = false;
   private sessions: SessionManager;
   private memory: MemoryManager;
+  private subagents: SubagentManager;
+  private spawnTool: SpawnTool;
+  private heartbeat: HeartbeatService;
 
   constructor(
     private bus: MessageBus,
     private provider: LLMProvider,
     private workspace: string,
-    private model: string = 'anthropic/claude-3.5-sonnet'
+    private model: string = 'anthropic/claude-3.5-sonnet',
+    private enableHeartbeat: boolean = false
   ) {
     this.context = new ContextBuilder(workspace);
     this.tools = new ToolRegistry();
     this.sessions = new SessionManager(workspace);
     this.memory = new MemoryManager(workspace);
+    this.subagents = new SubagentManager(
+      provider,
+      workspace,
+      bus,
+      model
+    );
+    this.spawnTool = new SpawnTool(this.subagents);
+    this.heartbeat = new HeartbeatService(
+      workspace,
+      provider,
+      model,
+      {
+        onExecute: this._executeHeartbeatTasks.bind(this),
+        onNotify: this._notifyHeartbeatResult.bind(this),
+      },
+      30 * 60 * 1000, // 30 minutes
+      enableHeartbeat
+    );
     this._registerDefaultTools();
   }
 
@@ -38,11 +63,15 @@ export class AgentLoop {
     this.tools.register(new ExecTool(this.workspace));
     this.tools.register(new WebSearchTool());
     this.tools.register(new MessageTool());
+    this.tools.register(this.spawnTool);
   }
 
   async run(): Promise<void> {
     this.running = true;
     console.log('🤖 Agent loop started');
+
+    // Start heartbeat service
+    this.heartbeat.start();
 
     while (this.running) {
       try {
@@ -56,10 +85,14 @@ export class AgentLoop {
         console.error('Error in agent loop:', error);
       }
     }
+
+    // Stop heartbeat service
+    this.heartbeat.stop();
   }
 
   stop(): void {
     this.running = false;
+    this.heartbeat.stop();
     console.log('🤖 Agent loop stopping');
   }
 
@@ -84,6 +117,9 @@ export class AgentLoop {
       ? msg.content.substring(0, 80) + '...' 
       : msg.content;
     console.log(`📩 Processing message from ${msg.channel}:${msg.senderId}: ${preview}`);
+
+    // 设置工具上下文
+    this.spawnTool.setContext(msg.channel, msg.chatId, msg.sessionKey);
 
     // 处理特殊命令
     const commandResult = await this._handleCommand(msg);
@@ -323,6 +359,7 @@ export class AgentLoop {
 - \`list_dir\` - List directory contents
 - \`exec\` - Execute shell commands
 - \`web_search\` - Search the web
+- \`spawn\` - Create background subagent
 
 **Tips:**
 - I can remember our conversations using the memory system
@@ -334,5 +371,41 @@ export class AgentLoop {
       msg.chatId,
       helpText
     );
+  }
+
+  /**
+   * Execute heartbeat tasks.
+   */
+  private async _executeHeartbeatTasks(tasks: string): Promise<string> {
+    // Create a temporary session for heartbeat execution
+    const sessionKey = 'heartbeat:system';
+    const session = await this.sessions.getOrCreate(sessionKey);
+
+    // Build messages
+    const history = getHistory(session, this.memoryWindow);
+    const historyMessages: ChatMessage[] = history.map(m => ({
+      role: m.role,
+      content: m.content || undefined,
+      tool_calls: m.tool_calls,
+      tool_call_id: m.tool_call_id,
+      name: m.name,
+    } as ChatMessage));
+
+    const initialMessages = await this.context.buildMessages(
+      historyMessages,
+      `Heartbeat check: ${tasks}`
+    );
+
+    const { finalContent } = await this._runAgentLoop(initialMessages);
+    return finalContent || 'Heartbeat tasks completed.';
+  }
+
+  /**
+   * Notify heartbeat result.
+   */
+  private async _notifyHeartbeatResult(response: string): Promise<void> {
+    // For now, just log the result
+    // In a real implementation, you might send this to a notification channel
+    console.log('⏱️ Heartbeat result:', response);
   }
 }
