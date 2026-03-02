@@ -5,6 +5,8 @@ import { ReadFileTool, WriteFileTool, EditFileTool, ListDirTool, ExecTool } from
 import { WebSearchTool } from './tools/web_search';
 import { MessageTool } from './tools/message';
 import { MessageBus, InboundMessage, OutboundMessage, createOutboundMessage } from '../bus';
+import { SessionManager, Session, SessionMessage, addMessage, getHistory } from '../session';
+import { MemoryManager } from '../memory';
 
 export class AgentLoop {
   private maxIterations = 40;
@@ -12,7 +14,8 @@ export class AgentLoop {
   private context: ContextBuilder;
   private tools: ToolRegistry;
   private running = false;
-  private history: Map<string, ChatMessage[]> = new Map();
+  private sessions: SessionManager;
+  private memory: MemoryManager;
 
   constructor(
     private bus: MessageBus,
@@ -22,6 +25,8 @@ export class AgentLoop {
   ) {
     this.context = new ContextBuilder(workspace);
     this.tools = new ToolRegistry();
+    this.sessions = new SessionManager(workspace);
+    this.memory = new MemoryManager(workspace);
     this._registerDefaultTools();
   }
 
@@ -81,16 +86,36 @@ export class AgentLoop {
     console.log(`📩 Processing message from ${msg.channel}:${msg.senderId}: ${preview}`);
 
     const sessionKey = msg.sessionKey;
-    const history = this.history.get(sessionKey) || [];
+    const session = await this.sessions.getOrCreate(sessionKey);
+
+    // 检查是否需要记忆整合
+    if (session.messages.length > this.memoryWindow) {
+      await this.memory.consolidate(session, this.provider, this.model, {
+        threshold: this.memoryWindow,
+      });
+      // 保存更新后的会话（lastConsolidated 已更新）
+      await this.sessions.save(session);
+    }
+
+    const history = getHistory(session, this.memoryWindow);
+
+    const historyMessages: ChatMessage[] = history.map(m => ({
+      role: m.role,
+      content: m.content || undefined,
+      tool_calls: m.tool_calls,
+      tool_call_id: m.tool_call_id,
+      name: m.name,
+    } as ChatMessage));
 
     const initialMessages = await this.context.buildMessages(
-      history,
+      historyMessages,
       msg.content
     );
 
-    const { finalContent, allMessages } = await this._runAgentLoop(initialMessages);
+    const { finalContent, allMessages, toolsUsed } = await this._runAgentLoop(initialMessages);
 
-    this.history.set(sessionKey, allMessages.slice(-this.memoryWindow));
+    const updatedSession = this._saveTurn(session, allMessages, history.length, toolsUsed);
+    await this.sessions.save(updatedSession);
 
     const responseContent = finalContent || 'No response';
     console.log(`📤 Response to ${msg.channel}:${msg.senderId}: ${responseContent.substring(0, 120)}...`);
@@ -103,11 +128,45 @@ export class AgentLoop {
     );
   }
 
+  private _saveTurn(
+    session: Session,
+    messages: ChatMessage[],
+    skip: number,
+    toolsUsed: string[]
+  ): Session {
+    const now = new Date();
+    let updatedSession = session;
+
+    for (const m of messages.slice(skip)) {
+      const entry: SessionMessage = {
+        role: m.role as SessionMessage['role'],
+        content: m.content || null,
+        timestamp: now.toISOString(),
+      };
+      if (m.tool_calls) {
+        entry.tool_calls = m.tool_calls;
+      }
+      if (m.tool_call_id) {
+        entry.tool_call_id = m.tool_call_id;
+      }
+      if (m.name) {
+        entry.name = m.name;
+      }
+      if (toolsUsed.length > 0) {
+        entry.tools_used = toolsUsed;
+      }
+      updatedSession = addMessage(updatedSession, entry.role, entry.content, entry);
+    }
+
+    return updatedSession;
+  }
+
   private async _runAgentLoop(
     initialMessages: ChatMessage[]
-  ): Promise<{ finalContent: string | null; allMessages: ChatMessage[] }> {
+  ): Promise<{ finalContent: string | null; allMessages: ChatMessage[]; toolsUsed: string[] }> {
     let messages = [...initialMessages];
     let finalContent: string | null = null;
+    const toolsUsed: string[] = [];
 
     for (let iteration = 0; iteration < this.maxIterations; iteration++) {
       const response = await this.provider.chat({
@@ -117,26 +176,34 @@ export class AgentLoop {
       });
 
       if (response.tool_calls.length > 0) {
+        // Convert to OpenAI format for messages
+        const toolCallDicts = response.tool_calls.map(tc => ({
+          id: tc.id,
+          type: 'function',
+          function: {
+            name: tc.name,
+            arguments: JSON.stringify(tc.arguments),
+          },
+        }));
+
         messages = this.context.addAssistantMessage(
           messages,
           response.content,
-          response.tool_calls
+          toolCallDicts
         );
 
         for (const toolCall of response.tool_calls) {
-          const args = typeof toolCall.function.arguments === 'string'
-            ? JSON.parse(toolCall.function.arguments)
-            : toolCall.function.arguments;
+          toolsUsed.push(toolCall.name);
 
           const result = await this.tools.execute(
-            toolCall.function.name,
-            args
+            toolCall.name,
+            toolCall.arguments
           );
 
           messages = this.context.addToolResult(
             messages,
             toolCall.id,
-            toolCall.function.name,
+            toolCall.name,
             result
           );
         }
@@ -154,7 +221,7 @@ export class AgentLoop {
       finalContent = `I reached the maximum number of iterations (${this.maxIterations}) without completing the task.`;
     }
 
-    return { finalContent, allMessages: messages };
+    return { finalContent, allMessages: messages, toolsUsed };
   }
 
   async processDirect(content: string, sessionKey: string = 'cli:direct'): Promise<string> {

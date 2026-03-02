@@ -1,7 +1,7 @@
 {
   "agents": {
     "defaults": {
-      "workspace": "~/.nanobot/workspace",
+      "workspace": "~/.mini-nanobot/workspace",
       "model": "ark-code-latest",
       "provider": "volcengine",
       "max_tokens": 8192,
