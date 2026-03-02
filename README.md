@@ -4,7 +4,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> 一个功能完整的 AI Agent 框架，灵感来自 [nanobot](https://github.com/danielmiessler/nanobot) 🐈，使用 TypeScript 实现。
+> 一个功能完整的且前端友好的轻量级 openclaw，灵感来自 [nanobot](https://github.com/danielmiessler/nanobot) 🐈，使用 TypeScript 实现。
 
 octobot 是一个模块化的 AI Agent 开发框架，支持多 LLM 提供商、多通道交互、会话管理、记忆系统和技能扩展。它让开发者能够快速构建具有长期记忆、工具调用和多平台集成能力的 AI 应用。
 
