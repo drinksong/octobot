@@ -10,23 +10,20 @@ import { LLMProvider } from './providers/llm';
 import { AgentLoop } from './agent/loop';
 import { CLIChannel } from './channels/cli';
 import { FeishuChannel } from './channels/feishu';
+import { MessageBus } from './bus';
 import { loadConfig, Config } from './config';
 
 async function main() {
-  // 加载配置
   const config = await loadConfig('./config.json');
 
-  // 从配置获取模型和提供商
   const model = config.agents.defaults.model;
   const providerName = config.agents.defaults.provider;
   const workspace = config.agents.defaults.workspace;
 
-  // 查找提供商配置
   let providerConfig = config.providers[providerName];
   let apiKey = providerConfig?.api_key || providerConfig?.apiKey || '';
   let apiBase = providerConfig?.api_base || providerConfig?.apiBase || '';
 
-  // 如果 provider 是 auto，尝试自动检测
   if (providerName === 'auto' || !apiKey) {
     for (const [name, cfg] of Object.entries(config.providers)) {
       const key = cfg.api_key || cfg.apiKey;
@@ -51,18 +48,19 @@ async function main() {
   console.log(`🔑 Provider: ${providerName}`);
   console.log(`📁 Workspace: ${workspace}`);
 
-  const provider = new LLMProvider(apiKey, apiBase, model, providerName);
-  const agent = new AgentLoop(provider, workspace, model);
+  const bus = new MessageBus();
 
-  // 检查运行模式
+  const provider = new LLMProvider(apiKey, apiBase, model, providerName);
+  const agent = new AgentLoop(bus, provider, workspace, model);
+
   const mode = process.env.MODE || 'cli';
 
   if (mode === 'feishu') {
-    // 飞书机器人模式
     const feishuConfig = config.channels.feishu;
 
     const appId = feishuConfig.app_id || feishuConfig.appId || '';
     const appSecret = feishuConfig.app_secret || feishuConfig.appSecret || '';
+    const allowFrom = feishuConfig.allow_from || feishuConfig.allowFrom || [];
 
     if (!feishuConfig.enabled || !appId || !appSecret) {
       console.error('❌ Feishu channel not configured in config.json');
@@ -71,12 +69,19 @@ async function main() {
       process.exit(1);
     }
 
-    const feishuChannel = new FeishuChannel(agent, appId, appSecret);
-    await feishuChannel.start();
+    const feishuChannel = new FeishuChannel(bus, appId, appSecret, allowFrom);
+
+    await Promise.all([
+      agent.run(),
+      feishuChannel.start(),
+    ]);
   } else {
-    // CLI 模式（默认）
-    const cli = new CLIChannel(agent);
-    await cli.start();
+    const cli = new CLIChannel(bus);
+
+    await Promise.all([
+      agent.run(),
+      cli.start(),
+    ]);
   }
 }
 
