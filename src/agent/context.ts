@@ -48,7 +48,7 @@ export class ContextBuilder {
     const osName = system === 'darwin' ? 'macOS' : system;
     const runtime = `${osName} ${process.arch}, Node.js ${process.version}`;
 
-    return `# octobot 🐈
+    return `# octobot 🐙
 
 You are octobot, a helpful AI assistant.
 
