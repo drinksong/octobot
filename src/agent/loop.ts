@@ -3,6 +3,7 @@ import { ToolRegistry } from './tools/registry';
 import { LLMProvider, ChatMessage } from '../providers/llm';
 import { ReadFileTool, WriteFileTool, EditFileTool, ListDirTool, ExecTool } from './tools/filesystem';
 import { WebSearchTool } from './tools/web_search';
+import { WebFetchTool } from './tools/web_fetch';
 import { MessageTool } from './tools/message';
 import { SpawnTool } from './tools/spawn';
 import { CronTool } from './tools/cron';
@@ -12,6 +13,8 @@ import { MemoryManager } from '../memory';
 import { SubagentManager } from './subagent';
 import { HeartbeatService } from '../heartbeat/service';
 import { CronService } from '../cron/service';
+import { MCPConnector } from '../mcp/connector';
+import { MCPServerConfig } from '../mcp/types';
 
 export class AgentLoop {
   private maxIterations = 40;
@@ -26,13 +29,16 @@ export class AgentLoop {
   private heartbeat: HeartbeatService;
   private cron: CronService;
   private cronTool: CronTool;
+  private mcpConnector: MCPConnector;
+  private abortControllers: Map<string, AbortController> = new Map();
 
   constructor(
     private bus: MessageBus,
     private provider: LLMProvider,
     private workspace: string,
     private model: string = 'anthropic/claude-3.5-sonnet',
-    private enableHeartbeat: boolean = false
+    private enableHeartbeat: boolean = false,
+    private mcpConfigs?: MCPServerConfig[]
   ) {
     this.context = new ContextBuilder(workspace);
     this.tools = new ToolRegistry();
@@ -61,6 +67,7 @@ export class AgentLoop {
       30 * 60 * 1000, // 30 minutes
       enableHeartbeat
     );
+    this.mcpConnector = new MCPConnector();
     this._registerDefaultTools();
   }
 
@@ -71,6 +78,7 @@ export class AgentLoop {
     this.tools.register(new ListDirTool(this.workspace));
     this.tools.register(new ExecTool(this.workspace));
     this.tools.register(new WebSearchTool());
+    this.tools.register(new WebFetchTool());
     this.tools.register(new MessageTool());
     this.tools.register(this.spawnTool);
     this.tools.register(this.cronTool);
@@ -79,6 +87,11 @@ export class AgentLoop {
   async run(): Promise<void> {
     this.running = true;
     console.log('🤖 Agent loop started');
+
+    // Connect to MCP servers if configured
+    if (this.mcpConfigs && this.mcpConfigs.length > 0) {
+      await this.mcpConnector.connectServers(this.mcpConfigs, this.tools);
+    }
 
     // Start services
     this.cron.start();
@@ -106,6 +119,7 @@ export class AgentLoop {
     this.running = false;
     this.cron.stop();
     this.heartbeat.stop();
+    this.mcpConnector.disconnectAll();
     console.log('🤖 Agent loop stopping');
   }
 
@@ -126,8 +140,8 @@ export class AgentLoop {
   }
 
   private async _processMessage(msg: InboundMessage): Promise<OutboundMessage | null> {
-    const preview = msg.content.length > 80 
-      ? msg.content.substring(0, 80) + '...' 
+    const preview = msg.content.length > 80
+      ? msg.content.substring(0, 80) + '...'
       : msg.content;
     console.log(`📩 Processing message from ${msg.channel}:${msg.senderId}: ${preview}`);
 
@@ -168,20 +182,38 @@ export class AgentLoop {
       msg.content
     );
 
-    const { finalContent, allMessages, toolsUsed } = await this._runAgentLoop(initialMessages);
+    // 创建 AbortController 用于取消任务
+    const controller = new AbortController();
+    this.abortControllers.set(sessionKey, controller);
 
-    const updatedSession = this._saveTurn(session, allMessages, history.length, toolsUsed);
-    await this.sessions.save(updatedSession);
+    try {
+      const { finalContent, allMessages, toolsUsed } = await this._runAgentLoop(initialMessages, controller.signal);
 
-    const responseContent = finalContent || 'No response';
-    console.log(`📤 Response to ${msg.channel}:${msg.senderId}: ${responseContent.substring(0, 120)}...`);
+      const updatedSession = this._saveTurn(session, allMessages, history.length, toolsUsed);
+      await this.sessions.save(updatedSession);
 
-    return createOutboundMessage(
-      msg.channel,
-      msg.chatId,
-      responseContent,
-      msg.metadata
-    );
+      const responseContent = finalContent || 'No response';
+      console.log(`📤 Response to ${msg.channel}:${msg.senderId}: ${responseContent.substring(0, 120)}...`);
+
+      return createOutboundMessage(
+        msg.channel,
+        msg.chatId,
+        responseContent,
+        msg.metadata
+      );
+    } catch (error: any) {
+      if (error.name === 'AbortError') {
+        return createOutboundMessage(
+          msg.channel,
+          msg.chatId,
+          '⏹️ Task was cancelled.',
+          msg.metadata
+        );
+      }
+      throw error;
+    } finally {
+      this.abortControllers.delete(sessionKey);
+    }
   }
 
   private _saveTurn(
@@ -218,13 +250,19 @@ export class AgentLoop {
   }
 
   private async _runAgentLoop(
-    initialMessages: ChatMessage[]
+    initialMessages: ChatMessage[],
+    signal?: AbortSignal
   ): Promise<{ finalContent: string | null; allMessages: ChatMessage[]; toolsUsed: string[] }> {
     let messages = [...initialMessages];
     let finalContent: string | null = null;
     const toolsUsed: string[] = [];
 
     for (let iteration = 0; iteration < this.maxIterations; iteration++) {
+      // 检查是否被取消
+      if (signal?.aborted) {
+        throw new Error('AbortError');
+      }
+
       const response = await this.provider.chat({
         messages,
         tools: this.tools.getDefinitions(),
@@ -249,6 +287,11 @@ export class AgentLoop {
         );
 
         for (const toolCall of response.tool_calls) {
+          // 检查是否被取消
+          if (signal?.aborted) {
+            throw new Error('AbortError');
+          }
+
           toolsUsed.push(toolCall.name);
 
           const result = await this.tools.execute(
@@ -344,14 +387,26 @@ export class AgentLoop {
   }
 
   /**
-   * /stop - 停止当前任务（预留）
+   * /stop - 停止当前任务
    */
   private async _handleStopCommand(msg: InboundMessage): Promise<OutboundMessage> {
-    // TODO: 实现任务取消功能
+    const sessionKey = msg.sessionKey;
+    const controller = this.abortControllers.get(sessionKey);
+
+    if (controller) {
+      controller.abort();
+      this.abortControllers.delete(sessionKey);
+      return createOutboundMessage(
+        msg.channel,
+        msg.chatId,
+        '⏹️ Task cancelled by user.'
+      );
+    }
+
     return createOutboundMessage(
       msg.channel,
       msg.chatId,
-      '⏹️ Stop command received. Task cancellation will be implemented in a future update.'
+      '⏹️ No active task to cancel.'
     );
   }
 

@@ -14,9 +14,11 @@ octobot 是一个模块化的 AI Agent 开发框架，支持多 LLM 提供商、
 - 💬 **多通道交互** - CLI 命令行、飞书机器人（支持 WebSocket 长连接）
 - 🧠 **双层记忆系统** - MEMORY.md（长期事实）+ HISTORY.md（可搜索历史）
 - 📦 **技能系统** - 通过 SKILL.md 动态扩展 Agent 能力
+- 🔗 **MCP 支持** - 集成 Model Context Protocol 服务器，扩展工具能力
 - 🚌 **消息总线** - 基于生产者-消费者模式的异步消息队列
-- 🛠️ **丰富工具集** - 文件操作、命令执行、网络搜索、消息发送
+- 🛠️ **丰富工具集** - 文件操作、命令执行、网络搜索、消息发送、子代理、定时任务
 - 💾 **会话持久化** - JSONL 格式存储，支持多会话并发
+- ⏹️ **任务取消** - 支持 `/stop` 命令取消正在执行的任务
 
 ## 🚀 快速开始
 
@@ -157,15 +159,44 @@ flowchart TB
 
 ## 🛠️ 工具列表
 
+### 内置工具
+
 | 工具 | 描述 | 示例 |
 |------|------|------|
 | `read_file` | 读取文件内容 | 读取代码文件、配置文件 |
 | `write_file` | 写入文件 | 创建新文件、保存结果 |
 | `edit_file` | 编辑文件 | 查找替换文本 |
 | `list_dir` | 列出目录 | 浏览项目结构 |
-| `exec` | 执行命令 | 运行 shell 命令 |
+| `exec` | 执行命令 | 运行 shell 命令（带安全模式） |
 | `web_search` | 网络搜索 | DuckDuckGo 搜索 |
+| `web_fetch` | 网页获取 | 获取网页内容并提取可读文本 |
 | `message` | 发送消息 | 发送回复给用户 |
+| `spawn` | 子代理 | 后台执行长时间任务 |
+| `cron` | 定时任务 | 创建定时执行的任务 |
+
+### MCP 工具
+
+通过配置 MCP 服务器，可以扩展更多工具能力：
+
+```json
+{
+  "mcp": {
+    "enabled": true,
+    "servers": {
+      "sqlite": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-sqlite", "./data.db"]
+      },
+      "filesystem": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/docs"]
+      }
+    }
+  }
+}
+```
+
+可用的 MCP 服务器：https://github.com/modelcontextprotocol/servers
 
 ## 🧠 记忆系统
 
@@ -221,18 +252,6 @@ Use tmux to manage terminal sessions...
 - **渐进式加载** - 只加载摘要，需要时再读取完整内容
 - **依赖检查** - 自动检查所需的二进制文件和环境变量
 
-## 📚 学习路径
-
-我们提供详细的分阶段教程，帮助你理解 AI Agent 开发的核心知识：
-
-| 阶段 | 文档 | 核心知识 |
-|------|------|----------|
-| 阶段 0 | [基础功能](docs/trae/ROADMAP.md) | Agent Loop、工具调用、LLM API |
-| 阶段 1 | [消息总线](docs/trae/PHASE1_MESSAGE_BUS.md) | 生产者-消费者模式、异步消息队列 |
-| 阶段 2 | [会话管理](docs/trae/PHASE2_SESSION_MANAGER.md) | 数据持久化、JSONL 格式、缓存模式 |
-| 阶段 3 | [记忆系统](docs/trae/PHASE3_MEMORY_SYSTEM.md) | RAG、记忆整合、LLM 工具调用 |
-| 阶段 4 | [技能系统](docs/trae/PHASE4_SKILL_SYSTEM.md) | 插件架构、YAML frontmatter、依赖检查 |
-
 ## 📋 功能计划
 
 | 模块 | 功能 | 状态 |
@@ -258,8 +277,10 @@ Use tmux to manage terminal sessions...
 | | Spawn 子代理 | ✅ 已完成 |
 | | Cron 定时任务 | ✅ 已完成 |
 | | Heartbeat 心跳服务 | ✅ 已完成 |
-| **计划功能** | MCP 服务器支持 | ⏳ 计划中 |
-| | 更多内置技能 | ⏳ 计划中 |
+| | 任务取消 (/stop) | ✅ 已完成 |
+| **MCP 支持** | MCP 服务器连接 | ✅ 已完成 |
+| | 工具自动注册 | ✅ 已完成 |
+| **计划功能** | 更多内置技能 | ⏳ 计划中 |
 | | Web UI 界面 | ⏳ 计划中 |
 | | 多 Agent 协作 | ⏳ 计划中 |
 

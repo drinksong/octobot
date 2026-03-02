@@ -75,11 +75,27 @@ export interface ToolsConfig {
   restrictToWorkspace?: boolean;
 }
 
+export interface MCPServerConfigSchema {
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
+  tool_timeout?: number;
+  toolTimeout?: number;
+}
+
+export interface MCPConfig {
+  enabled: boolean;
+  servers: Record<string, MCPServerConfigSchema>;
+}
+
 export interface Config {
   agents: AgentsConfig;
   channels: ChannelsConfig;
   providers: Record<string, ProviderConfig>;
   tools: ToolsConfig;
+  mcp?: MCPConfig;
 }
 
 export function createDefaultConfig(): Config {

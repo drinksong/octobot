@@ -210,10 +210,10 @@ If this file has no tasks (only headers and comments), the agent will skip the h
       return { action: 'skip', tasks: '' };
     }
 
-    const args = response.tool_calls[0].function.arguments;
+    const toolCall = response.tool_calls[0];
     return {
-      action: args.action || 'skip',
-      tasks: args.tasks || '',
+      action: toolCall.arguments.action || 'skip',
+      tasks: toolCall.arguments.tasks || '',
     };
   }
 

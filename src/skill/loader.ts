@@ -196,7 +196,7 @@ export class SkillLoader {
     }
 
     const frontmatter = match[1];
-    const meta: Partial<SkillMetadata> = {};
+    const meta: Record<string, string | boolean> = {};
 
     // 简单解析 YAML（只支持 key: value 格式）
     for (const line of frontmatter.split('\n')) {
@@ -204,19 +204,29 @@ export class SkillLoader {
       if (colonIndex === -1) continue;
 
       const key = line.slice(0, colonIndex).trim();
-      let value: any = line.slice(colonIndex + 1).trim();
+      let value: string | boolean = line.slice(colonIndex + 1).trim();
 
       // 处理布尔值
       if (value === 'true') value = true;
       else if (value === 'false') value = false;
 
-      (meta as any)[key] = value;
+      meta[key] = value;
     }
 
-    return {
+    // 构建 SkillMetadata
+    const result: SkillMetadata = {
       ...DEFAULT_SKILL_METADATA,
-      ...meta,
-    } as SkillMetadata;
+      name: typeof meta.name === 'string' ? meta.name : DEFAULT_SKILL_METADATA.name,
+      description: typeof meta.description === 'string' ? meta.description : DEFAULT_SKILL_METADATA.description,
+      always: typeof meta.always === 'boolean' ? meta.always : DEFAULT_SKILL_METADATA.always,
+    };
+
+    // metadata 字段保持原样（JSON 字符串）
+    if (typeof meta.metadata === 'string') {
+      result.metadata = meta.metadata;
+    }
+
+    return result;
   }
 
   /**

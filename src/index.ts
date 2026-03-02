@@ -50,8 +50,30 @@ async function main() {
 
   const bus = new MessageBus();
 
+  // 准备 MCP 配置
+  let mcpConfigs: any[] | undefined;
+  if (config.mcp?.enabled && config.mcp.servers) {
+    mcpConfigs = Object.entries(config.mcp.servers).map(([name, cfg]) => ({
+      name,
+      command: cfg.command,
+      args: cfg.args,
+      env: cfg.env,
+      url: cfg.url,
+      headers: cfg.headers,
+      toolTimeout: cfg.tool_timeout || cfg.toolTimeout || 30,
+    }));
+    console.log(`🔗 MCP: ${mcpConfigs.length} servers configured`);
+  }
+
   const provider = new LLMProvider(apiKey, apiBase, model, providerName);
-  const agent = new AgentLoop(bus, provider, workspace, model);
+  const agent = new AgentLoop(
+    bus,
+    provider,
+    workspace,
+    model,
+    false, // enableHeartbeat
+    mcpConfigs
+  );
 
   const mode = process.env.MODE || 'cli';
 

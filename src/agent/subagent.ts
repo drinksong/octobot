@@ -5,7 +5,7 @@
  * while the main agent continues to respond to users.
  */
 
-import { LLMProvider, ChatMessage } from '../providers/llm';
+import { LLMProvider, ChatMessage, ToolCall } from '../providers/llm';
 import { ToolRegistry } from './tools/registry';
 import { ReadFileTool, WriteFileTool, EditFileTool, ListDirTool, ExecTool } from './tools/filesystem';
 import { WebSearchTool } from './tools/web_search';
@@ -132,21 +132,14 @@ export class SubagentManager {
         });
 
         if (response.tool_calls && response.tool_calls.length > 0) {
-          // Add assistant message with tool calls
-          messages.push({
-            role: 'assistant',
-            content: response.content || '',
-            tool_calls: response.tool_calls,
-          });
-
           // Execute tools
           for (const toolCall of response.tool_calls) {
-            console.log(`[Subagent ${taskId}] Executing: ${toolCall.function.name}`);
-            const result = await tools.execute(toolCall.function.name, toolCall.function.arguments);
+            console.log(`[Subagent ${taskId}] Executing: ${toolCall.name}`);
+            const result = await tools.execute(toolCall.name, toolCall.arguments);
             messages.push({
               role: 'tool',
               tool_call_id: toolCall.id,
-              name: toolCall.function.name,
+              name: toolCall.name,
               content: result,
             });
           }
