@@ -277,7 +277,20 @@ export class SkillLoader {
    */
   private _commandExists(command: string): boolean {
     try {
-      execSync(`which ${command}`, { stdio: 'ignore' });
+      const extraPaths: string[] = [];
+      if (process.platform === 'darwin') {
+        extraPaths.push('/opt/homebrew/bin', '/usr/local/bin', '/usr/local/sbin');
+      } else if (process.platform === 'linux') {
+        extraPaths.push('/usr/local/sbin', '/usr/local/bin');
+      }
+      const current = process.env.PATH || '';
+      const parts = current.split(path.delimiter).filter(Boolean);
+      const extras = extraPaths.filter(p => p && !parts.includes(p));
+      const newPath = [...extras, ...parts].join(path.delimiter);
+      execSync(`which ${command}`, {
+        stdio: 'ignore',
+        env: { ...process.env, PATH: newPath },
+      });
       return true;
     } catch {
       return false;

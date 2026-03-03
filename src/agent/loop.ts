@@ -1,5 +1,5 @@
 import { ContextBuilder } from './context';
-import { ToolRegistry } from './tools/registry';
+import { ToolRegistry, ToolExecutionLog } from './tools/registry';
 import { LLMProvider, ChatMessage } from '../providers/llm';
 import { ReadFileTool, WriteFileTool, EditFileTool, ListDirTool, ExecTool } from './tools/filesystem';
 import { WebSearchTool } from './tools/web_search';
@@ -16,6 +16,8 @@ import { CronService } from '../cron/service';
 import { MCPConnector } from '../mcp/connector';
 import { MCPServerConfig } from '../mcp/types';
 import type { ToolsConfig } from '../config';
+
+export { ToolExecutionLog };
 
 export class AgentLoop {
   private maxIterations = 40;
@@ -137,6 +139,18 @@ export class AgentLoop {
     console.log('🤖 Agent loop stopping');
   }
 
+  getToolExecutionLogs(): ToolExecutionLog[] {
+    return this.tools.getExecutionLogs();
+  }
+
+  getRecentToolLogs(count: number = 10): ToolExecutionLog[] {
+    return this.tools.getRecentLogs(count);
+  }
+
+  clearToolExecutionLogs(): void {
+    this.tools.clearExecutionLogs();
+  }
+
   private async _dispatch(msg: InboundMessage): Promise<void> {
     try {
       const response = await this._processMessage(msg);
@@ -158,7 +172,9 @@ export class AgentLoop {
       ? msg.content.substring(0, 80) + '...'
       : msg.content;
     const logPrefix = msg.channel === 'cli' ? '\n' : '';
+    
     console.log(`${logPrefix}📩 Processing message from ${msg.channel}:${msg.senderId}: ${preview}`);
+    this.tools.clearExecutionLogs();
 
     // 设置工具上下文
     this.spawnTool.setContext(msg.channel, msg.chatId, msg.sessionKey);
@@ -215,23 +231,76 @@ export class AgentLoop {
       const responseContent = finalContent || 'No response';
       console.log(`${logPrefix}📤 Response to ${msg.channel}:${msg.senderId}: ${responseContent.substring(0, 120)}...`);
 
+      const metadata = msg.channel === 'feishu'
+        ? {
+          ...msg.metadata,
+          toolExecutionDetails: this.tools.getExecutionLogs().map(log => ({
+            toolName: log.toolName,
+            params: log.params,
+            result: log.result,
+            duration: log.duration,
+          })),
+        }
+        : msg.metadata;
+
       return createOutboundMessage(
         msg.channel,
         msg.chatId,
         responseContent,
-        msg.metadata
+        metadata
       );
     } catch (error: any) {
+      // 保存会话（即使出错也要保存已进行的对话）
+      try {
+        await this.sessions.save(session);
+        console.log(`💾 Session saved despite error: ${session.key}`);
+      } catch (saveError) {
+        console.error('❌ Failed to save session:', saveError);
+      }
+
       if (error.name === 'AbortError') {
+        const metadata = msg.channel === 'feishu'
+          ? {
+            ...msg.metadata,
+            toolExecutionDetails: this.tools.getExecutionLogs().map(log => ({
+              toolName: log.toolName,
+              params: log.params,
+              result: log.result,
+              duration: log.duration,
+            })),
+          }
+          : msg.metadata;
+
         return createOutboundMessage(
           msg.channel,
           msg.chatId,
           '⏹️ Task was cancelled.',
-          msg.metadata
+          metadata
         );
       }
-      throw error;
+      
+      // 返回错误消息而不是抛出
+      console.error('❌ Error in _processMessage:', error);
+      const metadata = msg.channel === 'feishu'
+        ? {
+          ...msg.metadata,
+          toolExecutionDetails: this.tools.getExecutionLogs().map(log => ({
+            toolName: log.toolName,
+            params: log.params,
+            result: log.result,
+            duration: log.duration,
+          })),
+        }
+        : msg.metadata;
+
+      return createOutboundMessage(
+        msg.channel,
+        msg.chatId,
+        `❌ Error: ${error.message || 'Unknown error'}`,
+        metadata
+      );
     } finally {
+      this.tools.clearExecutionLogs();
       this.abortControllers.delete(sessionKey);
     }
   }
