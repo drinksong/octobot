@@ -65,6 +65,7 @@ export class CLIChannel {
     console.log('║      🐙 octobot - AI Agent         ║');
     console.log('╚════════════════════════════════════╝');
     console.log(`${colors.reset}`);
+    console.log(`${colors.gray}✅ CLI channel started${colors.reset}`);
     console.log(`${colors.gray}Type your message (Ctrl+C to exit)${colors.reset}`);
     console.log(`${colors.gray}Commands: /new, /stop, /help${colors.reset}\n`);
 
@@ -95,6 +96,8 @@ export class CLIChannel {
           return;
         }
 
+        console.log(`${colors.gray}👤 User default: ${trimmed}${colors.reset}`);
+
         // 显示思考中
         process.stdout.write(`${colors.gray}octobot is thinking...${colors.reset}`);
 
@@ -121,7 +124,8 @@ export class CLIChannel {
           process.stdout.write('\r' + ' '.repeat(30) + '\r');
 
           const formattedContent = formatContent(msg.content);
-          console.log(`\n${colors.magenta}${colors.bright}octobot:${colors.reset} ${formattedContent}\n`);
+          console.log(`\n${colors.magenta}${colors.bright}octobot:${colors.reset} ${formattedContent}`);
+          console.log(`${colors.gray}✅ Sent response to default${colors.reset}\n`);
         }
       } catch (error) {
         console.error(`${colors.red}Error consuming outbound message:${colors.reset}`, error);

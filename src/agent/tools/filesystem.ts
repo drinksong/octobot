@@ -1,10 +1,8 @@
 import * as fs from 'fs/promises';
+import { existsSync, lstatSync } from 'fs';
 import * as path from 'path';
-import { exec as execCmd } from 'child_process';
-import { promisify } from 'util';
+import { spawn } from 'child_process';
 import { Tool, ToolParams } from './base';
-
-const execAsync = promisify(execCmd);
 
 export class ReadFileTool extends Tool {
   constructor(private workspace: string = process.cwd()) {
@@ -138,7 +136,6 @@ export class ListDirTool extends Tool {
 }
 
 export class ExecTool extends Tool {
-  // 危险命令模式列表
   private denyPatterns: RegExp[] = [
     /\brm\s+-[rf]{1,2}\b/,          // rm -r, rm -rf, rm -fr
     /\bdel\s+\/[fq]\b/,             // del /f, del /q
@@ -151,14 +148,11 @@ export class ExecTool extends Tool {
     /:\(\)\s*\{.*\};\s*:/,          // fork bomb
   ];
 
-  // 允许的模式（如果设置了，只允许匹配这些的命令）
-  private allowPatterns?: RegExp[];
-  
-  // 是否限制在工作区内
+  private allowPatterns: RegExp[];
   private restrictToWorkspace: boolean;
-  
-  // 命令超时时间（毫秒）
-  private timeout: number;
+  private timeoutSeconds: number;
+  private pathAppend: string;
+  private workingDir: string | undefined;
 
   constructor(
     private workspace: string = process.cwd(),
@@ -166,18 +160,21 @@ export class ExecTool extends Tool {
       timeout?: number;
       allowPatterns?: RegExp[];
       restrictToWorkspace?: boolean;
+      pathAppend?: string;
+      workingDir?: string;
     } = {}
   ) {
     super();
-    this.timeout = options.timeout ?? 60000;
-    this.allowPatterns = options.allowPatterns;
+    this.timeoutSeconds = options.timeout ?? 60;
+    this.allowPatterns = options.allowPatterns ?? [];
     this.restrictToWorkspace = options.restrictToWorkspace ?? false;
+    this.pathAppend = options.pathAppend ?? '';
+    this.workingDir = options.workingDir;
   }
 
   get name() { return 'exec'; }
   get description() { 
-    return 'Execute a shell command and return its output. Use with caution. ' +
-           'Some dangerous commands are blocked for safety.'; 
+    return 'Execute a shell command and return its output. Use with caution.'; 
   }
   get parameters() {
     return {
@@ -191,82 +188,157 @@ export class ExecTool extends Tool {
   }
 
   async execute({ command, working_dir }: ToolParams): Promise<string> {
-    const cwd = working_dir ? path.resolve(this.workspace, working_dir) : this.workspace;
-    
-    // 安全检查
-    const guardError = this._guardCommand(command, cwd);
+    const requestedCwd = working_dir || this.workingDir;
+    const cwdForGuard = requestedCwd
+      ? path.resolve(this.workspace, requestedCwd)
+      : process.cwd();
+    const guardError = this._guardCommand(command, cwdForGuard);
     if (guardError) {
-      return `Error: ${guardError}`;
+      return guardError;
     }
 
-    try {
-      const { stdout, stderr } = await execAsync(command, { 
-        cwd, 
-        timeout: this.timeout 
-      });
-      
-      let result = '';
-      if (stdout) result += stdout;
-      if (stderr) result += `\n[stderr]\n${stderr}`;
-      
-      // 截断过长的输出
-      const maxLen = 10000;
-      if (result.length > maxLen) {
-        result = result.substring(0, maxLen) + 
-                 `\n... (truncated, ${result.length - maxLen} more chars)`;
-      }
-      
-      return result || '(no output)';
-    } catch (e: any) {
-      if (e.killed && e.signal === 'SIGTERM') {
-        return `Error: Command timed out after ${this.timeout}ms`;
-      }
-      return `Error executing command: ${e.message}`;
+    const env = { ...process.env };
+    if (this.pathAppend) {
+      env.PATH = (env.PATH || '') + path.delimiter + this.pathAppend;
     }
+
+    return await new Promise<string>((resolve) => {
+      const shellPath = process.env.SHELL && process.env.SHELL.trim()
+        ? process.env.SHELL
+        : (existsSync('/bin/sh') ? '/bin/sh' : '/bin/bash');
+      const spawnOptions: { env: NodeJS.ProcessEnv; shell: string | boolean; cwd?: string } = {
+        env,
+        shell: shellPath,
+      };
+      if (requestedCwd) {
+        const resolvedCwd = path.resolve(this.workspace, requestedCwd);
+        try {
+          if (existsSync(resolvedCwd) && lstatSync(resolvedCwd).isDirectory()) {
+            spawnOptions.cwd = resolvedCwd;
+          }
+        } catch {}
+      }
+      const child = spawn(command, spawnOptions);
+      const stdoutChunks: Buffer[] = [];
+      const stderrChunks: Buffer[] = [];
+      let resolved = false;
+      let timedOut = false;
+
+      const killTimer = setTimeout(() => {
+        timedOut = true;
+        child.kill('SIGKILL');
+      }, this.timeoutSeconds * 1000);
+
+      const finalize = (result: string) => {
+        if (resolved) return;
+        resolved = true;
+        clearTimeout(killTimer);
+        resolve(result);
+      };
+
+      child.stdout?.on('data', (chunk) => {
+        stdoutChunks.push(Buffer.from(chunk));
+      });
+
+      child.stderr?.on('data', (chunk) => {
+        stderrChunks.push(Buffer.from(chunk));
+      });
+
+      child.on('error', (err) => {
+        finalize(`Error executing command: ${err.message}`);
+      });
+
+      child.on('close', (code) => {
+        if (timedOut) {
+          finalize(`Error: Command timed out after ${this.timeoutSeconds} seconds`);
+          return;
+        }
+
+        const stdoutText = stdoutChunks.length > 0
+          ? Buffer.concat(stdoutChunks).toString('utf-8')
+          : '';
+        const stderrText = stderrChunks.length > 0
+          ? Buffer.concat(stderrChunks).toString('utf-8')
+          : '';
+
+        const outputParts: string[] = [];
+        if (stdoutText) {
+          outputParts.push(stdoutText);
+        }
+        if (stderrText && stderrText.trim()) {
+          outputParts.push(`STDERR:\n${stderrText}`);
+        }
+        const exitCode = typeof code === 'number' ? code : 0;
+        if (exitCode !== 0) {
+          outputParts.push(`\nExit code: ${exitCode}`);
+        }
+
+        let result = outputParts.length > 0 ? outputParts.join('\n') : '(no output)';
+        const maxLen = 10000;
+        if (result.length > maxLen) {
+          result = result.substring(0, maxLen) +
+            `\n... (truncated, ${result.length - maxLen} more chars)`;
+        }
+
+        finalize(result);
+      });
+    });
   }
 
   /**
    * 命令安全检查
    */
   private _guardCommand(command: string, cwd: string): string | null {
-    const cmd = command.trim().toLowerCase();
+    const cmd = command.trim();
+    const lower = cmd.toLowerCase();
 
-    // 检查禁止模式
     for (const pattern of this.denyPatterns) {
-      if (pattern.test(cmd)) {
-        return 'Command blocked by safety guard (dangerous pattern detected)';
+      if (pattern.test(lower)) {
+        return 'Error: Command blocked by safety guard (dangerous pattern detected)';
       }
     }
 
-    // 检查允许模式（如果设置了白名单）
-    if (this.allowPatterns && this.allowPatterns.length > 0) {
-      const allowed = this.allowPatterns.some(p => p.test(cmd));
+    if (this.allowPatterns.length > 0) {
+      const allowed = this.allowPatterns.some(p => p.test(lower));
       if (!allowed) {
-        return 'Command blocked by safety guard (not in allowlist)';
+        return 'Error: Command blocked by safety guard (not in allowlist)';
       }
     }
 
-    // 检查路径遍历（如果限制在工作区）
     if (this.restrictToWorkspace) {
       if (cmd.includes('..\\') || cmd.includes('../')) {
-        return 'Command blocked by safety guard (path traversal detected)';
+        return 'Error: Command blocked by safety guard (path traversal detected)';
       }
 
-      // 检查绝对路径
-      const winPaths = cmd.match(/[a-z]:\\[^\\"']+/gi);
-      const posixPaths = cmd.match(/(?:^|[\s|>])(\/[^\s"'>]+)/g);
-      
       const cwdResolved = path.resolve(cwd);
-      
-      for (const p of [...(winPaths || []), ...(posixPaths || [])]) {
-        const cleanPath = p.trim().replace(/^\//, '/');
-        const resolved = path.resolve(cleanPath);
-        if (!resolved.startsWith(cwdResolved)) {
-          return 'Command blocked by safety guard (access outside workspace)';
+      for (const raw of this._extractAbsolutePaths(cmd)) {
+        try {
+          const resolved = path.resolve(raw.trim());
+          if (path.isAbsolute(resolved) && !this._isWithinCwd(resolved, cwdResolved)) {
+            return 'Error: Command blocked by safety guard (path outside working dir)';
+          }
+        } catch {
+          continue;
         }
       }
     }
 
     return null;
+  }
+
+  private _extractAbsolutePaths(command: string): string[] {
+    const winPaths = command.match(/[A-Za-z]:\\[^\s"'|><;]+/g) ?? [];
+    const posixPaths = Array.from(
+      command.matchAll(/(?:^|[\s|>])(\/[^\s"'>]+)/g),
+      match => match[1]
+    );
+    return [...winPaths, ...posixPaths];
+  }
+
+  private _isWithinCwd(targetPath: string, cwdResolved: string): boolean {
+    const relative = path.relative(cwdResolved, targetPath);
+    if (relative === '') return true;
+    if (path.isAbsolute(relative)) return false;
+    return !relative.startsWith('..');
   }
 }

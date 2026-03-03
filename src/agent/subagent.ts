@@ -10,6 +10,7 @@ import { ToolRegistry } from './tools/registry';
 import { ReadFileTool, WriteFileTool, EditFileTool, ListDirTool, ExecTool } from './tools/filesystem';
 import { WebSearchTool } from './tools/web_search';
 import { MessageBus, InboundMessage, createInboundMessage } from '../bus';
+import type { ToolsConfig } from '../config';
 
 // Simple UUID generator
 function generateId(): string {
@@ -39,7 +40,8 @@ export class SubagentManager {
     private bus: MessageBus,
     private model: string,
     private temperature: number = 0.7,
-    private maxTokens: number = 4096
+    private maxTokens: number = 4096,
+    private toolsConfig?: ToolsConfig
   ) {}
 
   /**
@@ -105,7 +107,16 @@ export class SubagentManager {
       tools.register(new WriteFileTool(this.workspace));
       tools.register(new EditFileTool(this.workspace));
       tools.register(new ListDirTool(this.workspace));
-      tools.register(new ExecTool(this.workspace));
+      const execConfig = this.toolsConfig?.exec;
+      const pathAppend = execConfig?.path_append ?? execConfig?.pathAppend;
+      const timeout = execConfig?.timeout;
+      const restrictToWorkspace = this.toolsConfig?.restrict_to_workspace ?? this.toolsConfig?.restrictToWorkspace;
+      tools.register(new ExecTool(this.workspace, {
+        timeout,
+        pathAppend,
+        restrictToWorkspace,
+        workingDir: this.workspace
+      }));
       tools.register(new WebSearchTool());
 
       // Build messages with subagent-specific prompt

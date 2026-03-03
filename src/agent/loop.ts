@@ -15,6 +15,7 @@ import { HeartbeatService } from '../heartbeat/service';
 import { CronService } from '../cron/service';
 import { MCPConnector } from '../mcp/connector';
 import { MCPServerConfig } from '../mcp/types';
+import type { ToolsConfig } from '../config';
 
 export class AgentLoop {
   private maxIterations = 40;
@@ -38,7 +39,8 @@ export class AgentLoop {
     private workspace: string,
     private model: string = 'anthropic/claude-3.5-sonnet',
     private enableHeartbeat: boolean = false,
-    private mcpConfigs?: MCPServerConfig[]
+    private mcpConfigs?: MCPServerConfig[],
+    private toolsConfig?: ToolsConfig
   ) {
     this.context = new ContextBuilder(workspace);
     this.tools = new ToolRegistry();
@@ -48,7 +50,10 @@ export class AgentLoop {
       provider,
       workspace,
       bus,
-      model
+      model,
+      0.7,
+      4096,
+      toolsConfig
     );
     this.spawnTool = new SpawnTool(this.subagents);
     this.cron = new CronService(
@@ -76,7 +81,16 @@ export class AgentLoop {
     this.tools.register(new WriteFileTool(this.workspace));
     this.tools.register(new EditFileTool(this.workspace));
     this.tools.register(new ListDirTool(this.workspace));
-    this.tools.register(new ExecTool(this.workspace));
+    const execConfig = this.toolsConfig?.exec;
+    const pathAppend = execConfig?.path_append ?? execConfig?.pathAppend;
+    const timeout = execConfig?.timeout;
+    const restrictToWorkspace = this.toolsConfig?.restrict_to_workspace ?? this.toolsConfig?.restrictToWorkspace;
+    this.tools.register(new ExecTool(this.workspace, {
+      timeout,
+      pathAppend,
+      restrictToWorkspace,
+      workingDir: this.workspace
+    }));
     this.tools.register(new WebSearchTool());
     this.tools.register(new WebFetchTool());
     this.tools.register(new MessageTool());
