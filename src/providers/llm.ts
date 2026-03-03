@@ -84,7 +84,8 @@ export class LLMProvider {
   }): Promise<ChatResponse> {
     const finalModel = model ? resolveModel(model, this.apiKey, this.apiBase) : this.resolvedModel;
     
-    console.log(`📤 Sending request to model: ${finalModel}`);
+    const logPrefix = process.env.MODE === 'cli' ? '\n' : '';
+    console.log(`${logPrefix}📤 Sending request to model: ${finalModel}`);
 
     try {
       const response = await this.client.chat.completions.create({

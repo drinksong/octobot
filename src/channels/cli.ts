@@ -1,20 +1,7 @@
 import * as readline from 'readline';
+import chalk from 'chalk';
+import ora, { Ora } from 'ora';
 import { MessageBus, createInboundMessage, OutboundMessage } from '../bus';
-
-// ANSI 颜色代码
-const colors = {
-  reset: '\x1b[0m',
-  bright: '\x1b[1m',
-  dim: '\x1b[2m',
-  red: '\x1b[31m',
-  green: '\x1b[32m',
-  yellow: '\x1b[33m',
-  blue: '\x1b[34m',
-  magenta: '\x1b[35m',
-  cyan: '\x1b[36m',
-  white: '\x1b[37m',
-  gray: '\x1b[90m',
-};
 
 /**
  * 格式化消息内容（简单的 Markdown 渲染）
@@ -24,95 +11,103 @@ function formatContent(content: string): string {
 
   // 代码块
   formatted = formatted.replace(/```(\w+)?\n([\s\S]*?)```/g, (_, lang, code) => {
-    return `${colors.gray}${'─'.repeat(40)}${colors.reset}\n${colors.cyan}${code.trim()}${colors.reset}\n${colors.gray}${'─'.repeat(40)}${colors.reset}`;
+    return `${chalk.gray('─'.repeat(40))}\n${chalk.cyan(code.trim())}\n${chalk.gray('─'.repeat(40))}`;
   });
 
   // 行内代码
-  formatted = formatted.replace(/`([^`]+)`/g, `${colors.cyan}$1${colors.reset}`);
+  formatted = formatted.replace(/`([^`]+)`/g, (_, code) => chalk.cyan(code));
 
   // 粗体
-  formatted = formatted.replace(/\*\*([^*]+)\*\*/g, `${colors.bright}$1${colors.reset}`);
+  formatted = formatted.replace(/\*\*([^*]+)\*\*/g, (_, text) => chalk.bold(text));
 
   // 斜体
-  formatted = formatted.replace(/\*([^*]+)\*/g, `${colors.dim}$1${colors.reset}`);
+  formatted = formatted.replace(/\*([^*]+)\*/g, (_, text) => chalk.dim(text));
 
   // 标题
   formatted = formatted.replace(/^(#{1,6})\s+(.+)$/gm, (_, hashes, title) => {
-    const color = hashes.length === 1 ? colors.magenta : colors.blue;
-    return `${color}${colors.bright}${hashes} ${title}${colors.reset}`;
+    return hashes.length === 1
+      ? chalk.magenta.bold(`${hashes} ${title}`)
+      : chalk.blue.bold(`${hashes} ${title}`);
   });
 
   // 列表项
   formatted = formatted.replace(/^(\s*)[-*]\s+(.+)$/gm, (_, indent, item) => {
-    return `${indent}${colors.yellow}•${colors.reset} ${item}`;
+    return `${indent}${chalk.yellow('•')} ${item}`;
   });
 
   // 链接
-  formatted = formatted.replace(/\[([^\]]+)\]\(([^)]+)\)/g, `${colors.blue}$1${colors.reset} ${colors.gray}($2)${colors.reset}`);
+  formatted = formatted.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, text, url) => {
+    return `${chalk.blue(text)} ${chalk.gray(`(${url})`)}`;
+  });
 
   return formatted;
 }
 
 export class CLIChannel {
   private running = false;
+  private spinner: Ora | null = null;
+  private rl: readline.Interface | null = null;
 
   constructor(private bus: MessageBus) {}
 
   async start(): Promise<void> {
     this.running = true;
-    console.log(`${colors.cyan}${colors.bright}`);
-    console.log('╔════════════════════════════════════╗');
-    console.log('║      🐙 octobot - AI Agent         ║');
-    console.log('╚════════════════════════════════════╝');
-    console.log(`${colors.reset}`);
-    console.log(`${colors.gray}✅ CLI channel started${colors.reset}`);
-    console.log(`${colors.gray}Type your message (Ctrl+C to exit)${colors.reset}`);
-    console.log(`${colors.gray}Commands: /new, /stop, /help${colors.reset}\n`);
+    console.log(chalk.cyan.bold('╔════════════════════════════════════╗'));
+    console.log(chalk.cyan.bold('║      🐙 octobot - AI Agent         ║'));
+    console.log(chalk.cyan.bold('╚════════════════════════════════════╝'));
+    console.log(chalk.gray('✅ CLI channel started'));
+    console.log(chalk.gray('Type your message (Ctrl+C to exit)'));
+    console.log(chalk.gray('Commands: /new, /stop, /help') + '\n');
 
-    this._startOutboundConsumer();
+    const outboundTask = this._startOutboundConsumer();
 
-    const rl = readline.createInterface({
+    this.rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout,
+      terminal: true,
     });
+    this.rl.setPrompt(chalk.green('You: '));
 
-    const askQuestion = () => {
-      if (!this.running) {
-        rl.close();
+    this.rl.on('line', async (input) => {
+      const trimmed = input.trim();
+
+      if (trimmed === '/exit' || trimmed === '/quit') {
+        this.stop();
+        this.rl?.close();
         return;
       }
 
-      rl.question(`${colors.green}You:${colors.reset} `, async (input) => {
-        const trimmed = input.trim();
+      if (!trimmed) {
+        this._resumeInput();
+        return;
+      }
 
-        if (trimmed === '/exit' || trimmed === '/quit') {
-          this.stop();
-          rl.close();
-          return;
-        }
+      this._startThinking();
+      this._pauseInput();
 
-        if (!trimmed) {
-          askQuestion();
-          return;
-        }
+      await this.bus.publishInbound(createInboundMessage(
+        'cli',
+        'user',
+        'default',
+        trimmed
+      ));
+    });
 
-        console.log(`${colors.gray}👤 User default: ${trimmed}${colors.reset}`);
-
-        // 显示思考中
-        process.stdout.write(`${colors.gray}octobot is thinking...${colors.reset}`);
-
-        await this.bus.publishInbound(createInboundMessage(
-          'cli',
-          'user',
-          'default',
-          trimmed
-        ));
-
-        askQuestion();
+    const done = new Promise<void>((resolve) => {
+      this.rl?.on('close', () => {
+        this.running = false;
+        this._stopThinking();
+        this.rl = null;
+        resolve();
       });
-    };
-
-    askQuestion();
+    });
+    process.on('SIGINT', () => {
+      if (this.running) {
+        this.rl?.close();
+      }
+    });
+    this._resumeInput();
+    await Promise.race([done, outboundTask]);
   }
 
   private async _startOutboundConsumer(): Promise<void> {
@@ -120,25 +115,75 @@ export class CLIChannel {
       try {
         const msg = await this.bus.consumeOutbound();
         if (msg && msg.channel === 'cli') {
-          // 清除 "thinking..." 提示
-          process.stdout.write('\r' + ' '.repeat(30) + '\r');
+          if (msg.metadata?.kind === 'tool_call') {
+            this._stopThinking();
+            console.log(chalk.gray(`\n${msg.content}\n`));
+            this._startThinking();
+            continue;
+          }
+          this._stopThinking();
 
           const formattedContent = formatContent(msg.content);
-          console.log(`\n${colors.magenta}${colors.bright}octobot:${colors.reset} ${formattedContent}`);
-          console.log(`${colors.gray}✅ Sent response to default${colors.reset}\n`);
+          console.log(`\n${chalk.magenta.bold('octobot:')} ${formattedContent}\n`);
+          this._resumeInput();
         }
       } catch (error) {
-        console.error(`${colors.red}Error consuming outbound message:${colors.reset}`, error);
+        this._stopThinking();
+        console.error(chalk.red('Error consuming outbound message:'), error);
+        this._resumeInput();
       }
     }
   }
 
   stop(): void {
     this.running = false;
-    console.log(`\n${colors.yellow}👋 Goodbye!${colors.reset}`);
+    this._stopThinking();
+    console.log(`\n${chalk.yellow('👋 Goodbye!')}`);
   }
 
   get isRunning(): boolean {
     return this.running;
+  }
+
+  private _startThinking(): void {
+    if (this.spinner) {
+      this.spinner.stop();
+    }
+    this.spinner = ora({
+      text: 'octobot is thinking...',
+      spinner: 'dots',
+      color: 'cyan',
+      discardStdin: false,
+      stream: process.stderr,
+    });
+    this.spinner.start();
+  }
+
+  private _stopThinking(): void {
+    if (this.spinner) {
+      this.spinner.stop();
+      this.spinner = null;
+    }
+    this._clearLine();
+  }
+
+  private _pauseInput(): void {
+    if (this.rl) {
+      this.rl.pause();
+    }
+  }
+
+  private _resumeInput(): void {
+    if (this.rl && this.running) {
+      this.rl.resume();
+      this.rl.prompt();
+    }
+  }
+
+  private _clearLine(): void {
+    if (process.stdout.isTTY) {
+      readline.clearLine(process.stdout, 0);
+      readline.cursorTo(process.stdout, 0);
+    }
   }
 }

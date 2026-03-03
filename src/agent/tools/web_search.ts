@@ -1,7 +1,8 @@
 import { Tool, ToolParams } from './base';
+import type { WebSearchConfig } from '../../config';
 
 export class WebSearchTool extends Tool {
-  constructor() {
+  constructor(private config: WebSearchConfig = {}) {
     super();
   }
 
@@ -20,43 +21,48 @@ export class WebSearchTool extends Tool {
 
   async execute({ query, count = 5 }: ToolParams): Promise<string> {
     try {
-      // 使用 DuckDuckGo 的即时答案 API（无需 API key）
-      const ddgUrl = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
-      
-      const response = await fetch(ddgUrl);
+      const apiKey = this.config.api_key ?? this.config.apiKey;
+      if (!apiKey) {
+        return 'Error: Tavily api_key not configured. Set tools.web.search.api_key in config.json.';
+      }
+
+      const maxFromConfig = this.config.max_results ?? this.config.maxResults;
+      const requested = typeof count === 'number' ? count : 5;
+      const effectiveCount = Math.max(1, Math.min(10, maxFromConfig ? Math.min(maxFromConfig, requested) : requested));
+
+      const response = await fetch('https://api.tavily.com/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          api_key: apiKey,
+          query,
+          max_results: effectiveCount,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        return `Error searching web: ${response.status} ${response.statusText} ${errorText}`.trim();
+      }
+
       const data = await response.json();
-      
+      const results = Array.isArray(data.results) ? data.results : [];
+
       let result = '';
-      
-      // 相关主题
-      if (data.RelatedTopics && data.RelatedTopics.length > 0) {
-        result += '📌 Related Topics:\n';
-        const topics = data.RelatedTopics.slice(0, count);
-        for (const topic of topics) {
-          if (topic.Text && topic.FirstURL) {
-            result += `- ${topic.Text}\n  ${topic.FirstURL}\n`;
-          }
+      if (data.answer) {
+        result += `✨ Answer:\n${data.answer}\n`;
+      }
+
+      if (results.length > 0) {
+        result += `${result ? '\n' : ''}🔎 Results:\n`;
+        for (const item of results) {
+          const title = item.title || item.url || 'Untitled';
+          const url = item.url ? `\n  ${item.url}` : '';
+          const snippet = item.content ? `\n  ${item.content}` : '';
+          result += `- ${title}${url}${snippet}\n`;
         }
       }
-      
-      // 即时答案
-      if (data.AbstractText) {
-        result += `\n📝 Abstract:\n${data.AbstractText}\n`;
-        if (data.AbstractURL) {
-          result += `Source: ${data.AbstractURL}\n`;
-        }
-      }
-      
-      // 即时答案
-      if (data.Answer) {
-        result += `\n✨ Answer:\n${data.Answer}\n`;
-      }
-      
-      // 定义
-      if (data.Definition) {
-        result += `\n📖 Definition:\n${data.Definition}\n`;
-      }
-      
+
       return result || 'No results found. Try a different query.';
     } catch (e: any) {
       return `Error searching web: ${e.message}`;

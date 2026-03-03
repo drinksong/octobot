@@ -94,6 +94,10 @@ export class FeishuChannel {
       try {
         const msg = await this.bus.consumeOutbound();
         if (msg && msg.channel === 'feishu') {
+          if (msg.metadata?.kind === 'tool_call') {
+            console.log(`🛠️ Tool call for ${msg.chatId}: ${msg.content}`);
+            continue;
+          }
           await this._sendMessage(msg.chatId, msg.content);
         }
       } catch (error) {

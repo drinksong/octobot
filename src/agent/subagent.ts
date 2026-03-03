@@ -117,7 +117,7 @@ export class SubagentManager {
         restrictToWorkspace,
         workingDir: this.workspace
       }));
-      tools.register(new WebSearchTool());
+      tools.register(new WebSearchTool(this.toolsConfig?.web?.search));
 
       // Build messages with subagent-specific prompt
       const systemPrompt = this._buildSubagentPrompt(task);
