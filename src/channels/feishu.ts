@@ -94,7 +94,7 @@ export class FeishuChannel {
       try {
         const msg = await this.bus.consumeOutbound();
         if (msg && msg.channel === 'feishu') {
-          await this._sendMessage(msg.chatId, msg.content);
+          await this._sendMessage(msg.chatId, msg.content, msg.metadata);
         }
       } catch (error) {
         console.error('Error consuming outbound message:', error);
@@ -195,7 +195,27 @@ export class FeishuChannel {
     }
   }
 
-  private async _sendMessage(chatId: string, content: string): Promise<void> {
+  private async _sendMessage(chatId: string, content: string, metadata?: Record<string, any>): Promise<void> {
+    let finalContent = content;
+    if (metadata?.toolExecutionDetails) {
+      const details = metadata.toolExecutionDetails as Array<{
+        toolName: string;
+        params: any;
+        result: string;
+        duration: number;
+      }>;
+
+      if (details.length > 0) {
+        const detailsText = details.map((d, i) => {
+          const paramsStr = JSON.stringify(d.params, null, 2).substring(0, 200);
+          const resultStr = d.result.substring(0, 300);
+          return `[${i + 1}] 🔧 ${d.toolName}\n参数: ${paramsStr}${paramsStr.length > 200 ? '...' : ''}\n结果: ${resultStr}${resultStr.length > 300 ? '...' : ''}\n耗时: ${d.duration}ms`;
+        }).join('\n\n');
+
+        finalContent = `${content}\n\n---\n📋 工具调用详情 (${details.length}次):\n${detailsText}`;
+      }
+    }
+
     const res = await this.client.im.message.create({
       params: {
         receive_id_type: 'chat_id',
@@ -203,7 +223,7 @@ export class FeishuChannel {
       data: {
         receive_id: chatId,
         msg_type: 'text',
-        content: JSON.stringify({ text: content }),
+        content: JSON.stringify({ text: finalContent }),
       },
     });
 

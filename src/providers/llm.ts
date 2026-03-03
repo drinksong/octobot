@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import { jsonrepair } from 'jsonrepair';
 import { findByModel, findGateway, findByName, resolveModel, ProviderSpec } from './registry';
 
 // OpenAI SDK 类型
@@ -74,7 +75,7 @@ export class LLMProvider {
     tools = [],
     model,
     temperature = 0.1,
-    max_tokens = 512,
+    max_tokens = 8192,
   }: {
     messages: ChatMessage[];
     tools?: any[];
@@ -84,7 +85,7 @@ export class LLMProvider {
   }): Promise<ChatResponse> {
     const finalModel = model ? resolveModel(model, this.apiKey, this.apiBase) : this.resolvedModel;
     
-    console.log(`📤 Sending request to model: ${finalModel}`);
+    console.log(`📤 Sending request to model: ${finalModel}, max_tokens: ${max_tokens}`);
 
     try {
       const response = await this.client.chat.completions.create({
@@ -95,6 +96,16 @@ export class LLMProvider {
         temperature,
         max_tokens,
       });
+      
+      // 检查是否有工具调用的参数被截断
+      if (response.choices[0].message.tool_calls) {
+        for (const tc of response.choices[0].message.tool_calls) {
+          const args = (tc as any).function.arguments;
+          if (typeof args === 'string' && args.length > 100) {
+            console.log(`📝 Tool call ${(tc as any).function.name} args length: ${args.length}`);
+          }
+        }
+      }
 
       const choice = response.choices[0];
       const message = choice.message as OpenAIMessage;
@@ -123,39 +134,20 @@ export class LLMProvider {
         return out;
       };
 
-      const extractTrailingString = (raw: string, key: string): string | null => {
-        const re = new RegExp(`"${key}"\\s*:\\s*"`);
-        const match = raw.match(re);
-        if (!match || match.index === undefined) return null;
-        const start = match.index + match[0].length;
-        const lastQuote = raw.lastIndexOf('"');
-        if (lastQuote <= start) return null;
-        return raw.slice(start, lastQuote);
-      };
-
       const parseToolArgs = (raw: string): Record<string, any> => {
+        // 首先尝试标准 JSON 解析
         try {
           return JSON.parse(raw);
         } catch {
-          const args: Record<string, any> = {};
-          const path = extractSimpleString(raw, 'path');
-          const command = extractSimpleString(raw, 'command');
-          const workingDir = extractSimpleString(raw, 'working_dir');
-          const content = extractTrailingString(raw, 'content');
-          if (path) args.path = path;
-          if (command) args.command = command;
-          if (workingDir) args.working_dir = workingDir;
-          if (content) {
-            args.content = content
-              .replace(/\\n/g, '\n')
-              .replace(/\\r/g, '\r')
-              .replace(/\\t/g, '\t')
-              .replace(/\\"/g, '"');
+          // 然后尝试 jsonrepair（自动修复损坏的 JSON）
+          try {
+            const repaired = jsonrepair(raw);
+            return JSON.parse(repaired);
+          } catch (repairError) {
+            console.error('❌ JSON repair also failed:', repairError);
+            // 最后返回原始字符串作为 _raw 字段
+            return { _raw: raw.slice(0, 2000) };
           }
-          if (Object.keys(args).length === 0) {
-            args._raw = raw.slice(0, 2000);
-          }
-          return args;
         }
       };
 

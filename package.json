@@ -16,6 +16,7 @@
     "@types/express": "^5.0.6",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
+    "jsonrepair": "^3.13.1",
     "openai": "^6.25.0",
     "ws": "^8.19.0"
   },

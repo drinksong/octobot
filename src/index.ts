@@ -6,12 +6,35 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
+import * as fs from 'fs/promises';
+import * as path from 'path';
+import * as os from 'os';
 import { LLMProvider } from './providers/llm';
 import { AgentLoop } from './agent/loop';
 import { CLIChannel } from './channels/cli';
 import { FeishuChannel } from './channels/feishu';
 import { MessageBus } from './bus';
 import { loadConfig, Config } from './config';
+
+/**
+ * 初始化工作区目录
+ */
+async function initWorkspace(workspacePath: string): Promise<void> {
+  const expandedPath = workspacePath.startsWith('~')
+    ? path.join(os.homedir(), workspacePath.slice(1))
+    : workspacePath;
+
+  // 创建主工作区目录
+  await fs.mkdir(expandedPath, { recursive: true });
+
+  // 创建子目录
+  const subdirs = ['sessions', 'memory', 'skills'];
+  for (const dir of subdirs) {
+    await fs.mkdir(path.join(expandedPath, dir), { recursive: true });
+  }
+
+  console.log(`📁 Workspace initialized: ${expandedPath}`);
+}
 
 async function main() {
   const config = await loadConfig('./config.json');
@@ -47,6 +70,9 @@ async function main() {
   console.log(`📦 Model: ${model}`);
   console.log(`🔑 Provider: ${providerName}`);
   console.log(`📁 Workspace: ${workspace}`);
+
+  // 初始化工作区
+  await initWorkspace(workspace);
 
   const bus = new MessageBus();
 
