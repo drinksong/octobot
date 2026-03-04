@@ -1,4 +1,4 @@
-# mini-nanobot (octobot) 🐙
+# octobot 🐙
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9+-blue.svg)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org/)
@@ -6,7 +6,7 @@
 
 > 一个模块化的 AI Agent 框架，专注多通道交互、会话与记忆管理、技能扩展与工具编排，灵感来自 [nanobot](https://github.com/danielmiessler/nanobot) 🐈。
 
-mini-nanobot（octobot）以 TypeScript 实现，提供可扩展的工具系统、双层记忆架构、技能加载机制与 MCP 集成，适用于构建面向研发流程的智能助手与自动化工作流。
+octobot 以 TypeScript 实现，提供可扩展的工具系统、双层记忆架构、技能加载机制与 MCP 集成，适用于构建面向研发流程的智能助手与自动化工作流。
 
 ## ✨ 特性
 
