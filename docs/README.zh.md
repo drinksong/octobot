@@ -257,9 +257,11 @@ flowchart TD
 ## 开发
 
 ```bash
-npm run build
-npm run start
+npm run dev
+npm run dev:gateway
 ```
+
+`dev` 与 `dev:gateway` 会监听 `src` 并在变更时重启。
 
 ## 贡献
 

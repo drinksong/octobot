@@ -257,9 +257,11 @@ MCP servers: https://github.com/modelcontextprotocol/servers
 ## Development
 
 ```bash
-npm run build
-npm run start
+npm run dev
+npm run dev:gateway
 ```
+
+`dev` and `dev:gateway` watch `src` and restart on changes.
 
 ## Contributing
 
