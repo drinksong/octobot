@@ -210,7 +210,10 @@ export class AgentLoop {
 
     const initialMessages = await this.context.buildMessages(
       historyMessages,
-      msg.content
+      msg.content,
+      msg.channel,
+      msg.chatId,
+      msg.media
     );
 
     // 创建 AbortController 用于取消任务
@@ -317,7 +320,7 @@ export class AgentLoop {
     for (const m of messages.slice(skip)) {
       const entry: SessionMessage = {
         role: m.role as SessionMessage['role'],
-        content: m.content || null,
+        content: this._normalizeMessageContent(m.content),
         timestamp: now.toISOString(),
       };
       if (m.tool_calls) {
@@ -336,6 +339,28 @@ export class AgentLoop {
     }
 
     return updatedSession;
+  }
+
+  private _normalizeMessageContent(content: ChatMessage['content']): string | null {
+    if (content === undefined || content === null) {
+      return null;
+    }
+    if (typeof content === 'string') {
+      return content;
+    }
+    if (Array.isArray(content)) {
+      const parts: string[] = [];
+      for (const part of content) {
+        if (part?.type === 'text' && typeof part.text === 'string') {
+          parts.push(part.text);
+        } else if (part?.type === 'image_url') {
+          parts.push('[image]');
+        }
+      }
+      const text = parts.join('\n').trim();
+      return text || null;
+    }
+    return null;
   }
 
   private async _runAgentLoop(
@@ -563,7 +588,9 @@ export class AgentLoop {
 
     const initialMessages = await this.context.buildMessages(
       historyMessages,
-      `Heartbeat check: ${tasks}`
+      `Heartbeat check: ${tasks}`,
+      'system',
+      'system'
     );
 
     const { finalContent } = await this._runAgentLoop(
@@ -603,7 +630,9 @@ export class AgentLoop {
 
     const initialMessages = await this.context.buildMessages(
       historyMessages,
-      `Scheduled task: ${job.payload.message}`
+      `Scheduled task: ${job.payload.message}`,
+      'system',
+      'system'
     );
 
     const { finalContent } = await this._runAgentLoop(

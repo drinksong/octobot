@@ -18,9 +18,15 @@ interface OpenAIMessage {
   reasoning_content?: string;
 }
 
+export type ChatContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } };
+
+export type ChatContent = string | null | ChatContentPart[];
+
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content?: string | null;
+  content?: ChatContent;
   tool_calls?: OpenAIToolCall[];
   tool_call_id?: string;
   name?: string;
