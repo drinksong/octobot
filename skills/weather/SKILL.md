@@ -1,11 +1,8 @@
 ---
 name: weather
 description: Get current weather and forecasts (no API key required).
-metadata:
-  octobot:
-    emoji: "🌤️"
-    requires:
-      bins: ["curl"]
+homepage: https://wttr.in/:help
+metadata: {"octobot":{"emoji":"🌤️","requires":{"bins":["curl"]}}}
 ---
 
 # Weather

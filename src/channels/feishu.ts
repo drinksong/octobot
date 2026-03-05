@@ -1,4 +1,7 @@
 import * as lark from '@larksuiteoapi/node-sdk';
+import * as fs from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
 import { MessageBus, createInboundMessage, OutboundMessage } from '../bus';
 
 export interface FeishuEvent {
@@ -22,9 +25,11 @@ export interface FeishuEvent {
       message_id: string;
       chat_id: string;
       content: string;
-      msg_type: string;
+      msg_type?: string;
+      message_type?: string;
       create_time: string;
       update_time: string;
+      chat_type?: string;
     };
   };
 }
@@ -120,8 +125,8 @@ export class FeishuChannel {
       }
 
       const { sender, message } = event;
-
-      if (message.message_type !== 'text') {
+      const messageType = message.message_type || message.msg_type;
+      if (!messageType) {
         return;
       }
 
@@ -141,14 +146,19 @@ export class FeishuChannel {
 
       const userId = sender.sender_id.open_id;
       const chatId = message.chat_id;
-      const content = this._parseMessageContent(message.content);
+      const chatType = message.chat_type || sender.chat_type;
+      const { content, media } = await this._buildInboundContent(messageType, message.content, messageId);
 
       if (!this.isAllowed(userId)) {
         console.warn(`Access denied for sender ${userId} on channel feishu`);
         return;
       }
 
-      console.log(`👤 User ${userId} in chat ${chatId}: ${content}`);
+      if (!content && media.length === 0) {
+        return;
+      }
+
+      console.log(`👤 User ${userId} in chat ${chatId}: ${content || '[media]'}`);
 
       await this._addReaction(messageId, 'THUMBSUP');
 
@@ -158,9 +168,11 @@ export class FeishuChannel {
         chatId,
         content,
         {
+          media,
           metadata: {
             message_id: messageId,
-            chat_type: message.chat_type,
+            chat_type: chatType,
+            msg_type: messageType,
           }
         }
       ));
@@ -179,6 +191,177 @@ export class FeishuChannel {
     } catch {
       return content;
     }
+  }
+
+  private async _buildInboundContent(
+    messageType: string,
+    rawContent: string,
+    messageId: string
+  ): Promise<{ content: string; media: string[] }> {
+    const contentParts: string[] = [];
+    const mediaPaths: string[] = [];
+    const contentJson = this._parseContentJson(rawContent);
+
+    if (messageType === 'text') {
+      const text = contentJson.text || '';
+      if (text) {
+        contentParts.push(text);
+      }
+    } else if (messageType === 'post') {
+      const { text, imageKeys } = this._extractPostContent(contentJson);
+      if (text) {
+        contentParts.push(text);
+      }
+      for (const imageKey of imageKeys) {
+        const { filePath, note } = await this._downloadAndSaveMedia('image', { image_key: imageKey }, messageId);
+        if (filePath) {
+          mediaPaths.push(filePath);
+        }
+        if (note) {
+          contentParts.push(note);
+        }
+      }
+    } else if (['image', 'audio', 'file', 'media'].includes(messageType)) {
+      const { filePath, note } = await this._downloadAndSaveMedia(messageType, contentJson, messageId);
+      if (filePath) {
+        mediaPaths.push(filePath);
+      }
+      if (note) {
+        contentParts.push(note);
+      }
+    } else {
+      contentParts.push(`[${messageType}]`);
+    }
+
+    return {
+      content: contentParts.join('\n').trim(),
+      media: mediaPaths,
+    };
+  }
+
+  private _parseContentJson(content: string): Record<string, any> {
+    try {
+      return content ? JSON.parse(content) : {};
+    } catch {
+      return {};
+    }
+  }
+
+  private _extractPostContent(contentJson: Record<string, any>): { text: string; imageKeys: string[] } {
+    const parseBlock = (block: any): { text: string; imageKeys: string[] } => {
+      if (!block || !Array.isArray(block.content)) {
+        return { text: '', imageKeys: [] };
+      }
+      const texts: string[] = [];
+      const images: string[] = [];
+      if (block.title) {
+        texts.push(block.title);
+      }
+      for (const row of block.content) {
+        if (!Array.isArray(row)) {
+          continue;
+        }
+        for (const el of row) {
+          if (!el || typeof el !== 'object') {
+            continue;
+          }
+          const tag = el.tag;
+          if (tag === 'text' || tag === 'a') {
+            if (el.text) texts.push(el.text);
+          } else if (tag === 'at') {
+            texts.push(`@${el.user_name || 'user'}`);
+          } else if (tag === 'img' && el.image_key) {
+            images.push(el.image_key);
+          }
+        }
+      }
+      return { text: texts.join(' ').trim(), imageKeys: images };
+    };
+
+    let root: any = contentJson;
+    if (root && typeof root === 'object' && root.post && typeof root.post === 'object') {
+      root = root.post;
+    }
+    if (!root || typeof root !== 'object') {
+      return { text: '', imageKeys: [] };
+    }
+    if (root.content) {
+      return parseBlock(root);
+    }
+    const locales = ['zh_cn', 'en_us', 'ja_jp'];
+    for (const key of locales) {
+      if (root[key]) {
+        const parsed = parseBlock(root[key]);
+        if (parsed.text || parsed.imageKeys.length > 0) {
+          return parsed;
+        }
+      }
+    }
+    for (const value of Object.values(root)) {
+      if (value && typeof value === 'object') {
+        const parsed = parseBlock(value);
+        if (parsed.text || parsed.imageKeys.length > 0) {
+          return parsed;
+        }
+      }
+    }
+    return { text: '', imageKeys: [] };
+  }
+
+  private _getMediaDir(): string {
+    return path.join(os.homedir(), '.octobot', 'media');
+  }
+
+  private async _downloadAndSaveMedia(
+    messageType: string,
+    contentJson: Record<string, any>,
+    messageId: string
+  ): Promise<{ filePath: string | null; note: string }> {
+    const fileKey = messageType === 'image' ? contentJson.image_key : contentJson.file_key;
+    if (!fileKey || !messageId) {
+      return { filePath: null, note: `[${messageType}: missing key]` };
+    }
+
+    const fileName = this._resolveFileName(messageType, contentJson, fileKey, messageId);
+    const mediaDir = this._getMediaDir();
+    await fs.mkdir(mediaDir, { recursive: true });
+    const filePath = path.join(mediaDir, fileName);
+
+    try {
+      const res = await this.client.im.messageResource.get({
+        params: { type: messageType },
+        path: {
+          message_id: messageId,
+          file_key: fileKey,
+        },
+      });
+      await res.writeFile(filePath);
+      return { filePath, note: `[${messageType}: ${filePath}]` };
+    } catch (error) {
+      console.error(`Error downloading ${messageType} ${fileKey}:`, error);
+      return { filePath: null, note: `[${messageType}: download failed]` };
+    }
+  }
+
+  private _resolveFileName(
+    messageType: string,
+    contentJson: Record<string, any>,
+    fileKey: string,
+    messageId: string
+  ): string {
+    const fromContent = contentJson.file_name || contentJson.fileName || contentJson.name;
+    if (fromContent) {
+      return `${messageId}_${fromContent}`;
+    }
+    const extMap: Record<string, string> = {
+      image: '.jpg',
+      audio: '.opus',
+      media: '.mp4',
+      file: '',
+    };
+    const ext = extMap[messageType] ?? '';
+    const shortKey = fileKey.slice(0, 16);
+    return `${messageId}_${shortKey}${ext}`;
   }
 
   private async _addReaction(messageId: string, emojiType: string): Promise<void> {

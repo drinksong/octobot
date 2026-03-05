@@ -5,7 +5,7 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { ChatMessage } from '../providers/llm';
+import { ChatContent, ChatContentPart, ChatMessage } from '../providers/llm';
 import { SkillManager } from '../skill';
 
 export class ContextBuilder {
@@ -58,17 +58,8 @@ ${runtime}
 ## Workspace
 Your workspace is at: ${workspacePath}
 - Long-term memory: ${workspacePath}/memory/MEMORY.md (write important facts here)
-- History log: ${workspacePath}/memory/HISTORY.md (grep-searchable)
+- History log: ${workspacePath}/memory/HISTORY.md (grep-searchable). Each entry starts with [YYYY-MM-DD HH:MM].
 - Custom skills: ${workspacePath}/skills/{skill-name}/SKILL.md
-- Heartbeat tasks: ${workspacePath}/HEARTBEAT.md (periodic tasks checked every 30 minutes)
-
-## Heartbeat Tasks
-\`HEARTBEAT.md\` is checked every 30 minutes. Use file tools to manage periodic tasks:
-- **Add**: \`edit_file\` to append new tasks
-- **Remove**: \`edit_file\` to delete completed tasks
-- **Rewrite**: \`write_file\` to replace all tasks
-
-When the user asks for a recurring/periodic task, update \`HEARTBEAT.md\` instead of creating a one-time reminder.
 
 ## octobot Guidelines
 - State intent before tool calls, but NEVER predict or claim results before receiving them.
@@ -76,7 +67,6 @@ When the user asks for a recurring/periodic task, update \`HEARTBEAT.md\` instea
 - After writing or editing a file, re-read it if accuracy matters.
 - If a tool call fails, analyze the error before retrying with a different approach.
 - Ask for clarification when the request is ambiguous.
-- Use the 'read_file' tool to read skill files when you need specific skill knowledge.
 
 Reply directly with text for conversations. Only use the 'message' tool to send to a specific chat channel.`;
   }
@@ -99,6 +89,73 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
     }
 
     return `${this.RUNTIME_CONTEXT_TAG}\n${lines.join('\n')}`;
+  }
+
+  private _getImageMime(filePath: string): string | null {
+    const ext = path.extname(filePath).toLowerCase();
+    const map: Record<string, string> = {
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.gif': 'image/gif',
+      '.webp': 'image/webp',
+      '.bmp': 'image/bmp',
+      '.tiff': 'image/tiff',
+      '.tif': 'image/tiff',
+      '.ico': 'image/x-icon',
+    };
+    return map[ext] || null;
+  }
+
+  private async _buildUserContent(
+    currentMessage: string,
+    media: string[] = [],
+    runtimeContext?: string
+  ): Promise<ChatContent> {
+    const imageParts: ChatContentPart[] = [];
+    const textParts: string[] = [];
+    const nonImageNotes: string[] = [];
+
+    if (runtimeContext) {
+      textParts.push(runtimeContext);
+    }
+
+    if (currentMessage && currentMessage.trim()) {
+      textParts.push(currentMessage);
+    }
+
+    for (const filePath of media) {
+      const mime = this._getImageMime(filePath);
+      if (mime) {
+        try {
+          const data = await fs.readFile(filePath);
+          const base64 = data.toString('base64');
+          imageParts.push({
+            type: 'image_url',
+            image_url: { url: `data:${mime};base64,${base64}` },
+          });
+        } catch {
+        nonImageNotes.push(`[image: ${filePath}]`);
+        }
+      } else {
+      nonImageNotes.push(`[file: ${filePath}]`);
+      }
+    }
+
+    if (nonImageNotes.length > 0) {
+      textParts.push(nonImageNotes.join('\n'));
+    }
+
+    const text = textParts.join('\n').trim();
+    if (imageParts.length > 0) {
+      const parts: ChatContentPart[] = [...imageParts];
+      if (text) {
+        parts.push({ type: 'text', text });
+      }
+      return parts;
+    }
+
+    return text;
   }
 
   private async _loadBootstrapFiles(): Promise<string> {
@@ -148,15 +205,16 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
     currentMessage: string,
     channel?: string,
     chatId?: string,
+    media?: string[],
   ): Promise<ChatMessage[]> {
     const systemPrompt = await this.buildSystemPrompt();
     const runtimeContext = this._buildRuntimeContext(channel, chatId);
+    const userContent = await this._buildUserContent(currentMessage, media, runtimeContext);
 
     return [
       { role: 'system', content: systemPrompt },
       ...history,
-      { role: 'user', content: runtimeContext },
-      { role: 'user', content: currentMessage },
+      { role: 'user', content: userContent },
     ];
   }
 
