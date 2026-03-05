@@ -34,6 +34,8 @@ export class AgentLoop {
   private cronTool: CronTool;
   private mcpConnector: MCPConnector;
   private abortControllers: Map<string, AbortController> = new Map();
+  private toolRepeatSig: string | null = null;
+  private toolRepeatCount = 0;
 
   constructor(
     private bus: MessageBus,
@@ -42,7 +44,8 @@ export class AgentLoop {
     private model: string = 'anthropic/claude-3.5-sonnet',
     private enableHeartbeat: boolean = false,
     private mcpConfigs?: MCPServerConfig[],
-    private toolsConfig?: ToolsConfig
+    private toolsConfig?: ToolsConfig,
+    maxIterations?: number
   ) {
     this.context = new ContextBuilder(workspace);
     this.tools = new ToolRegistry();
@@ -76,6 +79,9 @@ export class AgentLoop {
     );
     this.mcpConnector = new MCPConnector();
     this._registerDefaultTools();
+    if (typeof maxIterations === 'number' && maxIterations > 0) {
+      this.maxIterations = maxIterations;
+    }
   }
 
   private _registerDefaultTools(): void {
@@ -485,6 +491,13 @@ export class AgentLoop {
         return this._handleStopCommand(msg);
       case '/help':
         return this._handleHelpCommand(msg);
+      case '/reload':
+        this.context.clearSkillsCache();
+        return createOutboundMessage(
+          msg.channel,
+          msg.chatId,
+          '🔄 Skills cache cleared. Always-loaded skills will refresh on next prompt build.'
+        );
       default:
         return createOutboundMessage(
           msg.channel,
@@ -546,6 +559,7 @@ export class AgentLoop {
 - \`/new\` - Start a new session (clear conversation history)
 - \`/stop\` - Stop the current task (coming soon)
 - \`/help\` - Show this help message
+- \`/reload\` - Clear skills cache (refresh always-loaded skills)
 
 **Available Tools:**
 - \`read_file\` - Read file contents
