@@ -403,15 +403,84 @@ export class FeishuChannel {
       }
     }
 
+    const TABLE_RE = /((?:^[ \t]*\|.+\|[ \t]*\n)(?:^[ \t]*\|[-:\s|]+\|[ \t]*\n)(?:^[ \t]*\|.+\|[ \t]*\n?)+)/gm;
+    const HEADING_RE = /^(#{1,6})\s+(.+)$/gm;
+    const CODE_BLOCK_RE = /(```[\s\S]*?```)/gm;
+
+    const parseMdTable = (tableText: string): any | null => {
+      const lines = tableText
+        .split('\n')
+        .map(l => l.trim())
+        .filter(Boolean);
+      if (lines.length < 3) return null;
+      const split = (line: string) => line.replace(/^\|/, '').replace(/\|$/, '').split('|').map(s => s.trim());
+      const headers = split(lines[0]);
+      const rows = lines.slice(2).map(split);
+      const columns = headers.map((h, i) => ({ tag: 'column', name: `c${i}`, display_name: h, width: 'auto' }));
+      return {
+        tag: 'table',
+        page_size: rows.length + 1,
+        columns,
+        rows: rows.map(r => Object.fromEntries(headers.map((_, i) => [`c${i}`, r[i] ?? '']))),
+      };
+    };
+
+    const splitHeadings = (text: string): any[] => {
+      const codeBlocks: string[] = [];
+      let protectedText = text;
+      let idx = 0;
+      protectedText = protectedText.replace(CODE_BLOCK_RE, (m) => {
+        const placeholder = `\x00CODE${idx}\x00`;
+        codeBlocks.push(m);
+        idx += 1;
+        return placeholder;
+      });
+      const elements: any[] = [];
+      let last = 0;
+      for (const match of protectedText.matchAll(HEADING_RE)) {
+        const start = match.index ?? 0;
+        const before = protectedText.slice(last, start).trim();
+        if (before) elements.push({ tag: 'markdown', content: before });
+        const textContent = match[2].trim();
+        elements.push({
+          tag: 'div',
+          text: { tag: 'lark_md', content: `**${textContent}**` },
+        });
+        last = start + match[0].length;
+      }
+      const remaining = protectedText.slice(last).trim();
+      if (remaining) elements.push({ tag: 'markdown', content: remaining });
+      for (let i = 0; i < codeBlocks.length; i++) {
+        const placeholder = `\x00CODE${i}\x00`;
+        for (const el of elements) {
+          if (el.tag === 'markdown' && typeof el.content === 'string') {
+            el.content = el.content.replace(placeholder, codeBlocks[i]);
+          }
+        }
+      }
+      return elements.length > 0 ? elements : [{ tag: 'markdown', content: text }];
+    };
+
+    const buildCardElements = (s: string): any[] => {
+      const elements: any[] = [];
+      let lastEnd = 0;
+      for (const match of s.matchAll(TABLE_RE)) {
+        const start = match.index ?? 0;
+        const before = s.slice(lastEnd, start);
+        if (before.trim()) elements.push(...splitHeadings(before));
+        elements.push(parseMdTable(match[1]) || { tag: 'markdown', content: match[1] });
+        lastEnd = start + match[0].length;
+      }
+      const remaining = s.slice(lastEnd);
+      if (remaining.trim()) elements.push(...splitHeadings(remaining));
+      return elements.length > 0 ? elements : [{ tag: 'markdown', content: s }];
+    };
+
+    const receiveIdType = chatId.startsWith('oc_') ? 'chat_id' : 'open_id';
+    const card = { config: { wide_screen_mode: true }, elements: buildCardElements(finalContent) };
     const res = await this.client.im.message.create({
-      params: {
-        receive_id_type: 'chat_id',
-      },
-      data: {
-        receive_id: chatId,
-        msg_type: 'text',
-        content: JSON.stringify({ text: finalContent }),
-      },
+      params: { receive_id_type: receiveIdType },
+      data: { receive_id: chatId, msg_type: 'interactive', content: JSON.stringify(card) },
     });
 
     if (res.code !== 0) {
