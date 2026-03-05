@@ -92,7 +92,10 @@ octobot onboard
 ### 运行
 
 ```bash
+# 启动 CLI 交互对话
 octobot agent
+
+# 启动飞书网关（需要配置 channels.feishu）
 octobot gateway
 ```
 

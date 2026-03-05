@@ -92,7 +92,10 @@ Config file: `~/.octobot/config.json`
 ### Run
 
 ```bash
+# Start interactive CLI chat
 octobot agent
+
+# Start Feishu gateway (requires channels.feishu config)
 octobot gateway
 ```
 
