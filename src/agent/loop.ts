@@ -15,7 +15,7 @@ import { HeartbeatService } from '../heartbeat/service';
 import { CronService } from '../cron/service';
 import { MCPConnector } from '../mcp/connector';
 import { MCPServerConfig } from '../mcp/types';
-import type { ToolsConfig } from '../config';
+import type { ToolsConfig, ChannelsConfig } from '../config';
 
 export { ToolExecutionLog };
 
@@ -45,6 +45,7 @@ export class AgentLoop {
     private enableHeartbeat: boolean = false,
     private mcpConfigs?: MCPServerConfig[],
     private toolsConfig?: ToolsConfig,
+    private channelsConfig?: ChannelsConfig,
     maxIterations?: number
   ) {
     this.context = new ContextBuilder(workspace);
@@ -240,16 +241,21 @@ export class AgentLoop {
       const responseContent = finalContent || 'No response';
       console.log(`${logPrefix}📤 Response to ${msg.channel}:${msg.senderId}: ${responseContent.substring(0, 120)}...`);
 
-      const metadata = msg.channel === 'feishu'
+      const sendToolHints =
+        this.channelsConfig?.send_tool_hints ??
+        (this.channelsConfig as any)?.sendToolHints ??
+        false;
+
+      const metadata = msg.channel === 'feishu' && sendToolHints
         ? {
-          ...msg.metadata,
-          toolExecutionDetails: this.tools.getExecutionLogs().map(log => ({
-            toolName: log.toolName,
-            params: log.params,
-            result: log.result,
-            duration: log.duration,
-          })),
-        }
+            ...msg.metadata,
+            toolExecutionDetails: this.tools.getExecutionLogs().map(log => ({
+              toolName: log.toolName,
+              params: log.params,
+              result: log.result,
+              duration: log.duration,
+            })),
+          }
         : msg.metadata;
 
       return createOutboundMessage(
@@ -498,6 +504,8 @@ export class AgentLoop {
           msg.chatId,
           '🔄 Skills cache cleared. Always-loaded skills will refresh on next prompt build.'
         );
+      case '/model':
+        return this._handleModelCommand(msg, parts.slice(1));
       default:
         return createOutboundMessage(
           msg.channel,
@@ -560,6 +568,7 @@ export class AgentLoop {
 - \`/stop\` - Stop the current task (coming soon)
 - \`/help\` - Show this help message
 - \`/reload\` - Clear skills cache (refresh always-loaded skills)
+- \`/model [name]\` - Show current model or switch to a new one
 
 **Available Tools:**
 - \`read_file\` - Read file contents
@@ -579,6 +588,46 @@ export class AgentLoop {
       msg.channel,
       msg.chatId,
       helpText
+    );
+  }
+
+  /**
+   * /model - 显示或切换当前模型
+   */
+  private async _handleModelCommand(msg: InboundMessage, args: string[]): Promise<OutboundMessage> {
+    const arg0 = (args[0] || '').trim();
+    if (!arg0) {
+      const suggestions = this.provider.getSuggestedModels();
+      const info = this.provider.getCurrentInfo();
+      const lines = [`🧠 Current model: ${this.model}`];
+      lines.push(`Provider: ${info.provider}`);
+      if (suggestions.length > 0) {
+        lines.push(`\nAvailable examples:`);
+        for (const s of suggestions) lines.push(`- ${s}`);
+        lines.push(`\nYou can switch with "/model <provider> <model>" or "/model <provider>/<model>"`);
+      }
+      return createOutboundMessage(msg.channel, msg.chatId, lines.join('\n'));
+    }
+    let nextProvider: string | undefined;
+    let nextModel = arg0;
+    if (args.length >= 2) {
+      nextProvider = arg0;
+      nextModel = (args[1] || '').trim() || nextModel;
+    } else if (arg0.includes('/')) {
+      const [p, ...rest] = arg0.split('/');
+      nextProvider = p;
+      nextModel = rest.join('/') || nextModel;
+    }
+    if (nextProvider) {
+      this.provider.setModelAndProvider(nextModel, nextProvider);
+    } else {
+      this.provider.setModelAndProvider(nextModel);
+    }
+    this.model = nextModel;
+    return createOutboundMessage(
+      msg.channel,
+      msg.chatId,
+      `✅ Switched model to: ${nextProvider ? `${nextProvider}/${this.model}` : this.model}`
     );
   }
 
