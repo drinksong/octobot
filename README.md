@@ -99,6 +99,21 @@ octobot agent
 octobot gateway
 ```
 
+### Model
+
+```text
+# Show current provider/model and examples
+/model
+
+# Switch provider + model
+/model openai gpt-4o-mini
+/model anthropic/claude-3.5-sonnet
+```
+
+Notes:
+- Use provider/model format when switching; the client will reconfigure baseURL if needed.
+- Suggestions depend on current provider and account availability.
+
 ## Usage
 
 ### CLI
@@ -114,6 +129,42 @@ octobot: Hello! How can I help?
 2. Configure `channels.feishu.app_id` and `channels.feishu.app_secret`
 3. Run `octobot gateway`
 4. Mention the bot in Feishu to start a conversation
+
+#### Rich cards
+- JSON 2.0 unified: all cards use `schema: "2.0"` with `body.elements`
+- Markdown: headings (bold), quotes (>), lists (-/*/1.), links ([text](url)), fenced code (```)
+- Table: markdown tables converted to 2.0 table component; link cells auto-use `lark_md`
+- Toggle tool hints in replies with `channels.send_tool_hints` (default false).
+- To send media (images/files/audio), include file paths in outbound metadata: `media: ["/path/to.png"]`.
+
+Example (table in 2.0):
+```json
+{
+  "schema": "2.0",
+  "body": {
+    "elements": [
+      {
+        "tag": "table",
+        "page_size": 5,
+        "columns": [
+          { "name": "rank", "display_name": "#", "data_type": "number" },
+          { "name": "title", "display_name": "Title", "data_type": "lark_md" },
+          { "name": "summary", "display_name": "Summary", "data_type": "text" },
+          { "name": "link", "display_name": "Link", "data_type": "lark_md" }
+        ],
+        "rows": [
+          {
+            "rank": 1,
+            "title": "**OpenAI 发布 GPT-5.4**",
+            "summary": "OpenAI 推出 GPT-5.4 …",
+            "link": "[OpenAI官方](https://openai.com)"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
 
 ## Tools and Skills
 

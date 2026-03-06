@@ -422,12 +422,30 @@ export class FeishuChannel {
       const split = (line: string) => line.replace(/^\|/, '').replace(/\|$/, '').split('|').map(s => s.trim());
       const headers = split(lines[0]);
       const rows = lines.slice(2).map(split);
-      const columns = headers.map((h, i) => ({ tag: 'column', name: `c${i}`, display_name: h, width: 'auto' }));
+      const hasLink = (s: string) => /\[[^\]]+\]\([^)]+\)/.test(s || '') || /<a\s+href=['"][^'"]+['"]\s*>/i.test(s || '');
+      const hasBold = (s: string) => /\*\*[^*]+\*\*/.test(s || '');
+      const hasItalic = (s: string) => /\*[^*]+\*/.test(s || '');
+      const hasStrike = (s: string) => /~~[^~]+~~/.test(s || '');
+      const hasAt = (s: string) => /<at\s+id=.+?>/.test(s || '');
+      const hasMarkdown = (s: string) => hasLink(s) || hasBold(s) || hasItalic(s) || hasStrike(s) || hasAt(s);
+      const columns = headers.map((h, i) => ({
+        name: `c${i}`,
+        display_name: h,
+        data_type: rows.some(r => hasMarkdown(r[i])) ? 'lark_md' : 'text',
+        width: 'auto',
+      }));
+      const rowObjs = rows.map(r => {
+        const obj: Record<string, any> = {};
+        headers.forEach((_, i) => {
+          obj[`c${i}`] = r[i] ?? '';
+        });
+        return obj;
+      });
       return {
         tag: 'table',
-        page_size: rows.length + 1,
+        page_size: Math.min(rows.length + 1, 10),
         columns,
-        rows: rows.map(r => Object.fromEntries(headers.map((_, i) => [`c${i}`, r[i] ?? '']))),
+        rows: rowObjs,
       };
     };
 
@@ -466,7 +484,8 @@ export class FeishuChannel {
               quoteLines.push(lines[i].replace(/^\s*>+\s+/, ''));
               i += 1;
             }
-            els.push({ tag: 'note', elements: [{ tag: 'markdown', content: quoteLines.join('\n') }] });
+            // Feishu note element does NOT allow markdown children; render quotes as top-level markdown
+            els.push({ tag: 'markdown', content: quoteLines.map(l => `> ${l}`).join('\n') });
             continue;
           }
           if (isListItem(line)) {
@@ -530,16 +549,19 @@ export class FeishuChannel {
         const start = match.index ?? 0;
         const before = s.slice(lastEnd, start);
         if (before.trim()) elements.push(...splitHeadings(before));
-        elements.push(parseMdTable(match[1]) || { tag: 'markdown', content: match[1] });
+        const tbl = parseMdTable(match[1]);
+        elements.push(tbl || { tag: 'markdown', content: match[1] });
         lastEnd = start + match[0].length;
       }
       const remaining = s.slice(lastEnd);
       if (remaining.trim()) elements.push(...splitHeadings(remaining));
-      return elements.length > 0 ? elements : [{ tag: 'markdown', content: s }];
+      if (elements.length === 0) elements.push({ tag: 'markdown', content: s });
+      return elements;
     };
 
     const receiveIdType = chatId.startsWith('oc_') ? 'chat_id' : 'open_id';
-    const card = { config: { wide_screen_mode: true }, elements: buildCardElements(finalContent) };
+    const built = buildCardElements(finalContent);
+    const card = { schema: '2.0', body: { elements: built } };
     const res = await this.client.im.message.create({
       params: { receive_id_type: receiveIdType },
       data: { receive_id: chatId, msg_type: 'interactive', content: JSON.stringify(card) },

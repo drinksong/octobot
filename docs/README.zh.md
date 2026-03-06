@@ -115,6 +115,42 @@ octobot: 你好！有什么需要我协助的吗？
 3. 运行 `octobot gateway`
 4. 在飞书中 @ 机器人开始对话
 
+#### 富文本卡片（JSON 2.0）
+- 全量统一使用 `schema: "2.0"` + `body.elements`
+- Markdown：标题（加粗）、引用（>）、列表（-/*/1.）、链接（[text](url)）、代码块（```）
+- 表格：将 markdown 表格转换为 2.0 的 table 组件；含链接的列自动使用 `lark_md`
+- 工具提示开关：`channels.send_tool_hints`（默认 false）
+- 发送媒体：在出站消息的 metadata 传入文件路径数组：`media: ["/path/to.png"]`
+
+示例（2.0 表格）：
+```json
+{
+  "schema": "2.0",
+  "body": {
+    "elements": [
+      {
+        "tag": "table",
+        "page_size": 5,
+        "columns": [
+          { "name": "rank", "display_name": "#", "data_type": "number" },
+          { "name": "title", "display_name": "标题", "data_type": "lark_md" },
+          { "name": "summary", "display_name": "摘要", "data_type": "text" },
+          { "name": "link", "display_name": "链接", "data_type": "lark_md" }
+        ],
+        "rows": [
+          {
+            "rank": 1,
+            "title": "**OpenAI 发布 GPT-5.4**",
+            "summary": "OpenAI 推出 GPT-5.4 …",
+            "link": "[OpenAI官方](https://openai.com)"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
 ## 工具与技能
 
 ### 内置工具
@@ -262,6 +298,21 @@ npm run dev:gateway
 ```
 
 `dev` 与 `dev:gateway` 会监听 `src` 并在变更时重启。
+
+## 模型
+
+```text
+# 查看当前 provider/model 与示例
+/model
+
+# 切换 provider + model
+/model openai gpt-4o-mini
+/model anthropic/claude-3.5-sonnet
+```
+
+说明：
+- 切换建议使用 `provider/model` 形式；底层会根据 Provider 重新配置 baseURL
+- 示例列表依据当前 Provider 与账号可用性生成
 
 ## 发布
 
