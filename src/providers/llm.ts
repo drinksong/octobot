@@ -49,6 +49,8 @@ export class LLMProvider {
   private client: OpenAI;
   private provider: ProviderSpec | undefined;
   private resolvedModel: string;
+  private baseURL: string;
+  private providerNameInternal: string;
 
   constructor(
     private apiKey: string,
@@ -57,10 +59,12 @@ export class LLMProvider {
     private providerName: string = ''
   ) {
     // Detect provider: provider_name (from config) is primary signal
-    this.provider = findByName(this.providerName) || findGateway(this.apiKey, this.apiBase) || findByModel(this.defaultModel);
+    this.providerNameInternal = this.providerName;
+    this.provider = findByName(this.providerNameInternal) || findGateway(this.apiKey, this.apiBase) || findByModel(this.defaultModel);
     
     // Resolve API base
     const baseURL = this.apiBase || this.provider?.defaultApiBase || 'https://api.openai.com/v1';
+    this.baseURL = baseURL;
     
     // Create OpenAI client
     this.client = new OpenAI({
@@ -69,11 +73,51 @@ export class LLMProvider {
     });
 
     // Resolve model name
-    this.resolvedModel = resolveModel(this.defaultModel, this.apiKey, this.apiBase, this.providerName);
+    this.resolvedModel = resolveModel(this.defaultModel, this.apiKey, this.apiBase, this.providerNameInternal);
     
     console.log(`🤖 LLM Provider: ${this.provider?.displayName || 'Custom'}`);
     console.log(`🤖 Model: ${this.resolvedModel}`);
     console.log(`🤖 API Base: ${baseURL}`);
+  }
+
+  getSuggestedModels(): string[] {
+    const name = this.providerNameInternal || this.provider?.name || '';
+    const map: Record<string, string[]> = {
+      openai: ['gpt-4o-mini', 'gpt-4o'],
+      anthropic: ['claude-3.5-sonnet', 'claude-3-opus'],
+      openrouter: ['gpt-4o-mini', 'claude-3.5-sonnet'],
+      volcengine: ['ark-code-latest'],
+      deepseek: ['deepseek-chat', 'deepseek-reasoner'],
+      gemini: ['gemini-1.5-flash', 'gemini-1.5-pro'],
+      zhipu: ['glm-4', 'glm-4-flash'],
+      dashscope: ['qwen-turbo', 'qwen-plus'],
+      moonshot: ['moonshot-v1-8k', 'moonshot-v1-32k'],
+    };
+    const list = map[name] || [];
+    if (!name) return list;
+    return list.map(m => `${name}/${m}`);
+  }
+
+  getCurrentInfo(): { provider: string; model: string; apiBase: string } {
+    return {
+      provider: this.providerNameInternal || (this.provider?.name || ''),
+      model: this.resolvedModel,
+      apiBase: this.baseURL,
+    };
+  }
+
+  setModelAndProvider(model: string, providerName?: string): void {
+    if (providerName) {
+      this.providerNameInternal = providerName;
+      this.provider = findByName(providerName) || findGateway(this.apiKey, this.apiBase) || this.provider;
+      const newBase = this.apiBase || this.provider?.defaultApiBase || this.baseURL;
+      this.baseURL = newBase;
+      this.client = new OpenAI({
+        apiKey: this.apiKey,
+        baseURL: newBase,
+      });
+    }
+    this.resolvedModel = resolveModel(model, this.apiKey, this.apiBase, this.providerNameInternal);
   }
 
   async chat({
@@ -89,7 +133,7 @@ export class LLMProvider {
     temperature?: number;
     max_tokens?: number;
   }): Promise<ChatResponse> {
-    const finalModel = model ? resolveModel(model, this.apiKey, this.apiBase) : this.resolvedModel;
+    const finalModel = model ? resolveModel(model, this.apiKey, this.apiBase, this.providerNameInternal) : this.resolvedModel;
     const logPrefix = process.env.MODE === 'cli' ? '\n' : '';
     console.log(`${logPrefix}📤 Sending request to model: ${finalModel}`);
 

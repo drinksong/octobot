@@ -245,4 +245,8 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
     messages.push(msg);
     return messages;
   }
+
+  public clearSkillsCache(): void {
+    this.skillManager.clearCache();
+  }
 }

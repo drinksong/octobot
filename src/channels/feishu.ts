@@ -103,7 +103,13 @@ export class FeishuChannel {
             console.log(`🛠️ Tool call for ${msg.chatId}: ${msg.content}`);
             continue;
           }
-          await this._sendMessage(msg.chatId, msg.content);
+          const media: string[] = Array.isArray(msg.metadata?.media) ? msg.metadata.media : [];
+          if (media.length > 0) {
+            await this._sendMediaBatch(msg.chatId, media);
+          }
+          if (msg.content && msg.content.trim()) {
+            await this._sendMessage(msg.chatId, msg.content, msg.metadata);
+          }
         }
       } catch (error) {
         console.error('Error consuming outbound message:', error);
@@ -416,12 +422,30 @@ export class FeishuChannel {
       const split = (line: string) => line.replace(/^\|/, '').replace(/\|$/, '').split('|').map(s => s.trim());
       const headers = split(lines[0]);
       const rows = lines.slice(2).map(split);
-      const columns = headers.map((h, i) => ({ tag: 'column', name: `c${i}`, display_name: h, width: 'auto' }));
+      const hasLink = (s: string) => /\[[^\]]+\]\([^)]+\)/.test(s || '') || /<a\s+href=['"][^'"]+['"]\s*>/i.test(s || '');
+      const hasBold = (s: string) => /\*\*[^*]+\*\*/.test(s || '');
+      const hasItalic = (s: string) => /\*[^*]+\*/.test(s || '');
+      const hasStrike = (s: string) => /~~[^~]+~~/.test(s || '');
+      const hasAt = (s: string) => /<at\s+id=.+?>/.test(s || '');
+      const hasMarkdown = (s: string) => hasLink(s) || hasBold(s) || hasItalic(s) || hasStrike(s) || hasAt(s);
+      const columns = headers.map((h, i) => ({
+        name: `c${i}`,
+        display_name: h,
+        data_type: rows.some(r => hasMarkdown(r[i])) ? 'lark_md' : 'text',
+        width: 'auto',
+      }));
+      const rowObjs = rows.map(r => {
+        const obj: Record<string, any> = {};
+        headers.forEach((_, i) => {
+          obj[`c${i}`] = r[i] ?? '';
+        });
+        return obj;
+      });
       return {
         tag: 'table',
-        page_size: rows.length + 1,
+        page_size: Math.min(rows.length + 1, 10),
         columns,
-        rows: rows.map(r => Object.fromEntries(headers.map((_, i) => [`c${i}`, r[i] ?? '']))),
+        rows: rowObjs,
       };
     };
 
@@ -435,12 +459,69 @@ export class FeishuChannel {
         idx += 1;
         return placeholder;
       });
+
+      const parseBlocks = (segment: string): any[] => {
+        const els: any[] = [];
+        const lines = segment.split('\n');
+        let i = 0;
+        const isListItem = (s: string) => /^\s*(-|\*|\d+\.)\s+/.test(s);
+        const isQuote = (s: string) => /^\s*>+\s+/.test(s);
+        const linkOnly = (s: string) => {
+          const m = s.match(/^\s*\[([^\]]+)\]\(([^)]+)\)\s*$/);
+          return m ? { text: m[1], href: m[2] } : null;
+        };
+        while (i < lines.length) {
+          const line = lines[i];
+          const link = linkOnly(line);
+          if (link) {
+            els.push({ tag: 'a', text: link.text, href: link.href });
+            i += 1;
+            continue;
+          }
+          if (isQuote(line)) {
+            const quoteLines: string[] = [];
+            while (i < lines.length && isQuote(lines[i])) {
+              quoteLines.push(lines[i].replace(/^\s*>+\s+/, ''));
+              i += 1;
+            }
+            // Feishu note element does NOT allow markdown children; render quotes as top-level markdown
+            els.push({ tag: 'markdown', content: quoteLines.map(l => `> ${l}`).join('\n') });
+            continue;
+          }
+          if (isListItem(line)) {
+            const listLines: string[] = [];
+            while (i < lines.length && isListItem(lines[i])) {
+              listLines.push(lines[i]);
+              i += 1;
+            }
+            els.push({ tag: 'markdown', content: listLines.join('\n') });
+            continue;
+          }
+          // Paragraph accumulation
+          const para: string[] = [];
+          while (
+            i < lines.length &&
+            !isQuote(lines[i]) &&
+            !isListItem(lines[i]) &&
+            !linkOnly(lines[i])
+          ) {
+            para.push(lines[i]);
+            i += 1;
+          }
+          const content = para.join('\n').trim();
+          if (content) {
+            els.push({ tag: 'markdown', content });
+          }
+        }
+        return els.length > 0 ? els : [{ tag: 'markdown', content: segment }];
+      };
+
       const elements: any[] = [];
       let last = 0;
       for (const match of protectedText.matchAll(HEADING_RE)) {
         const start = match.index ?? 0;
         const before = protectedText.slice(last, start).trim();
-        if (before) elements.push({ tag: 'markdown', content: before });
+        if (before) elements.push(...parseBlocks(before));
         const textContent = match[2].trim();
         elements.push({
           tag: 'div',
@@ -449,7 +530,7 @@ export class FeishuChannel {
         last = start + match[0].length;
       }
       const remaining = protectedText.slice(last).trim();
-      if (remaining) elements.push({ tag: 'markdown', content: remaining });
+      if (remaining) elements.push(...parseBlocks(remaining));
       for (let i = 0; i < codeBlocks.length; i++) {
         const placeholder = `\x00CODE${i}\x00`;
         for (const el of elements) {
@@ -468,16 +549,19 @@ export class FeishuChannel {
         const start = match.index ?? 0;
         const before = s.slice(lastEnd, start);
         if (before.trim()) elements.push(...splitHeadings(before));
-        elements.push(parseMdTable(match[1]) || { tag: 'markdown', content: match[1] });
+        const tbl = parseMdTable(match[1]);
+        elements.push(tbl || { tag: 'markdown', content: match[1] });
         lastEnd = start + match[0].length;
       }
       const remaining = s.slice(lastEnd);
       if (remaining.trim()) elements.push(...splitHeadings(remaining));
-      return elements.length > 0 ? elements : [{ tag: 'markdown', content: s }];
+      if (elements.length === 0) elements.push({ tag: 'markdown', content: s });
+      return elements;
     };
 
     const receiveIdType = chatId.startsWith('oc_') ? 'chat_id' : 'open_id';
-    const card = { config: { wide_screen_mode: true }, elements: buildCardElements(finalContent) };
+    const built = buildCardElements(finalContent);
+    const card = { schema: '2.0', body: { elements: built } };
     const res = await this.client.im.message.create({
       params: { receive_id_type: receiveIdType },
       data: { receive_id: chatId, msg_type: 'interactive', content: JSON.stringify(card) },
@@ -487,6 +571,92 @@ export class FeishuChannel {
       console.error(`Failed to send message: ${res.msg}`);
     } else {
       console.log(`✅ Sent response to ${chatId}`);
+    }
+  }
+
+  private readonly IMAGE_EXTS = new Set<string>(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.ico', '.tiff', '.tif']);
+  private readonly AUDIO_EXTS = new Set<string>(['.opus']);
+
+  private async _uploadImage(filePath: string): Promise<string | null> {
+    try {
+      const buf = await fs.readFile(filePath);
+      const res: any = await this.client.im.image.create({
+        data: {
+          image_type: 'message',
+          image: buf,
+        },
+      });
+      const key = res?.data?.image_key;
+      if (key) {
+        return key as string;
+      }
+      console.error(`Failed to upload image`);
+      return null;
+    } catch (error) {
+      console.error('Error uploading image:', error);
+      return null;
+    }
+  }
+
+  private async _uploadFile(filePath: string): Promise<string | null> {
+    try {
+      const buf = await fs.readFile(filePath);
+      const fileName = path.basename(filePath);
+      // Infer file_type from extension (fallback to 'stream')
+      const ext = path.extname(fileName).toLowerCase();
+      const typeMap: Record<string, string> = {
+        '.pdf': 'pdf', '.doc': 'doc', '.docx': 'doc',
+        '.xls': 'xls', '.xlsx': 'xls', '.ppt': 'ppt', '.pptx': 'ppt',
+        '.mp4': 'mp4', '.opus': 'opus',
+      };
+      const file_type = (typeMap[ext] ?? 'stream') as 'stream' | 'pdf' | 'doc' | 'xls' | 'ppt' | 'mp4' | 'opus';
+      const res: any = await this.client.im.file.create({
+        data: {
+          file_name: fileName,
+          file_type,
+          file: buf,
+        },
+      });
+      const key = res?.data?.file_key;
+      if (key) {
+        return key as string;
+      }
+      console.error(`Failed to upload file`);
+      return null;
+    } catch (error) {
+      console.error('Error uploading file:', error);
+      return null;
+    }
+  }
+
+  private async _sendMediaBatch(chatId: string, mediaPaths: string[]): Promise<void> {
+    const receiveIdType = chatId.startsWith('oc_') ? 'chat_id' : 'open_id';
+    for (const p of mediaPaths) {
+      try {
+        await fs.access(p);
+      } catch {
+        console.warn(`Media not found: ${p}`);
+        continue;
+      }
+      const ext = path.extname(p).toLowerCase();
+      if (this.IMAGE_EXTS.has(ext)) {
+        const image_key = await this._uploadImage(p);
+        if (image_key) {
+          await this.client.im.message.create({
+            params: { receive_id_type: receiveIdType },
+            data: { receive_id: chatId, msg_type: 'image', content: JSON.stringify({ image_key }) },
+          });
+        }
+      } else {
+        const file_key = await this._uploadFile(p);
+        if (file_key) {
+          const msg_type = this.AUDIO_EXTS.has(ext) ? 'audio' : 'file';
+          await this.client.im.message.create({
+            params: { receive_id_type: receiveIdType },
+            data: { receive_id: chatId, msg_type, content: JSON.stringify({ file_key }) },
+          });
+        }
+      }
     }
   }
 

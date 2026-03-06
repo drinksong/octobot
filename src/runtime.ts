@@ -97,7 +97,9 @@ async function buildRuntime(config: Config) {
     model,
     false,
     mcpConfigs,
-    config.tools
+    config.tools,
+    config.channels,
+    (config.agents.defaults.max_tool_iterations as any) ?? (config.agents.defaults.maxToolIterations as any)
   );
 
   return { bus, agent, config };
